@@ -36,3 +36,7 @@ Before finishing a change:
 - Verify create, edit, delete, multi-select, ordering, joining, and JSON reload.
 - Verify two workflows share presets while retaining independent selections.
 - Report checks that could not be run and why.
+
+## Other
+
+- Since this is a pre-release version, you don't need to worry about destructive operations or maintaining compatibility.
