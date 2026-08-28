@@ -77,6 +77,9 @@ class SimplePresetNodeTests(unittest.TestCase):
                 ("PUT", "/simple-preset/presets/{preset_id}"),
                 ("DELETE", "/simple-preset/presets/{preset_id}"),
                 ("POST", "/simple-preset/order"),
+                ("POST", "/simple-preset/profiles"),
+                ("PUT", "/simple-preset/profiles/{profile_id}"),
+                ("DELETE", "/simple-preset/profiles/{profile_id}"),
             ],
         )
 

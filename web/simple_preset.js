@@ -4,6 +4,8 @@ import { api } from "../../scripts/api.js";
 const controllers = new Set();
 const scrollRegions = new Set();
 const sortMenus = new Set();
+const ALL_PROFILES = "__all_profiles__";
+const DEFAULT_PROFILE_ID = "default";
 const channel = typeof BroadcastChannel === "function"
     ? new BroadcastChannel("simple-preset")
     : null;
@@ -40,10 +42,11 @@ function installStyles() {
             --sp-row-hover: #e2e5ea;
         }
         .sp-root *, .sp-root *::before, .sp-root *::after { box-sizing: border-box; }
-        .sp-header, .sp-toolbar, .sp-summary, .sp-row, .sp-actions, .sp-form-header, .sp-form-actions {
+        .sp-header, .sp-profile-toolbar, .sp-toolbar, .sp-summary, .sp-row, .sp-actions,
+        .sp-form-header, .sp-form-actions {
             display: flex; align-items: center;
         }
-        .sp-header { gap: 7px; }
+        .sp-header { gap: 7px; padding-top: 8px; border-top: 1px solid var(--sp-border); }
         .sp-title { font-size: 13px; font-weight: 700; letter-spacing: .01em; }
         .sp-count {
             margin-right: auto; padding: 2px 7px; border-radius: 999px;
@@ -66,6 +69,21 @@ function installStyles() {
         .sp-primary { border-color: var(--sp-accent); background: var(--sp-accent); color: white; }
         .sp-danger { color: #ff8d8d; }
         :root:not(.dark-theme) .sp-danger { color: #c43f47; }
+        .sp-profile-section {
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .sp-profile-toolbar { gap: 6px; }
+        .sp-profile-label { flex: none; color: var(--sp-muted); font-weight: 650; }
+        .sp-profile-select, .sp-form-select {
+            min-width: 0; height: 29px; padding: 4px 7px;
+            border: 1px solid var(--sp-border); border-radius: 6px;
+            outline: none; color: var(--sp-text); background: var(--sp-panel); font: inherit;
+        }
+        .sp-profile-select { flex: 1; }
+        .sp-form-select { width: 100%; }
+        .sp-profile-select:focus, .sp-form-select:focus { border-color: var(--sp-accent); }
+        .sp-profile-form { display: flex; align-items: center; gap: 6px; }
+        .sp-profile-form .sp-input { min-width: 0; flex: 1; }
         .sp-toolbar { gap: 6px; }
         .sp-sort-control { position: relative; flex: none; }
         .sp-sort-menu {
@@ -149,6 +167,8 @@ function installStyles() {
         }
         .sp-form-header { min-height: 28px; gap: 8px; }
         .sp-form-title { min-width: 0; flex: 1; font-weight: 700; }
+        .sp-form-field { display: flex; align-items: center; gap: 7px; }
+        .sp-form-label { flex: none; color: var(--sp-muted); }
         .sp-textarea { height: 108px; min-height: 108px; resize: none; padding: 7px 8px; }
         .sp-form-actions { flex: none; gap: 6px; }
         .sp-empty {
@@ -161,6 +181,10 @@ function installStyles() {
         }
         .sp-summary-label { width: 17px; height: 17px; flex: none; color: var(--sp-muted); }
         .sp-summary-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sp-selection-notice {
+            min-height: 18px; color: var(--sp-muted); font-size: 11px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
         .sp-hidden { display: none !important; }
         @keyframes sp-spin { to { transform: rotate(360deg); } }
     `;
@@ -363,16 +387,33 @@ async function confirmDelete(name) {
     return window.confirm(`「${name}」を削除しますか？`);
 }
 
+async function confirmProfileDelete(name, presetCount) {
+    const message = `「${name}」と所属するプリセット${presetCount}件をすべて削除します。`
+        + "この操作は元に戻せません。";
+    const dialog = app.extensionManager?.dialog;
+    if (dialog?.confirm) {
+        return Boolean(await dialog.confirm({
+            title: "プロファイルを削除",
+            message,
+        }));
+    }
+    return window.confirm(message);
+}
+
 function createPresetWidget(node, inputName, inputData) {
     installStyles();
     const root = element("div", "sp-root");
     root.addEventListener("pointerdown", (event) => {
         selectNodeFromWidget(node, event);
     }, { capture: true });
+    let profiles = [];
     let presets = [];
     let selectedIds = parseSelection(inputData?.[1]?.default ?? "[]");
+    let currentProfileId = DEFAULT_PROFILE_ID;
     let editingId = null;
+    let editingProfileId = null;
     let formVisible = false;
+    let profileFormVisible = false;
     let loading = false;
     let searchText = "";
     let sortKey = null;
@@ -389,6 +430,34 @@ function createPresetWidget(node, inputName, inputData) {
     const reloadButton = iconButton("refresh", "共有プリセットを再読込");
     const addButton = iconButton("add", "新しいプリセットを追加", "sp-icon-button sp-primary");
     header.append(title, count, reloadButton, addButton);
+
+    const profileSection = element("div", "sp-profile-section");
+    const profileToolbar = element("div", "sp-profile-toolbar");
+    const profileLabel = element("label", "sp-profile-label", "プロファイル");
+    const profileSelect = element("select", "sp-profile-select");
+    profileLabel.htmlFor = `sp-profile-${node.id}`;
+    profileSelect.id = `sp-profile-${node.id}`;
+    const addProfileButton = iconButton("add", "新しいプロファイルを追加");
+    const editProfileButton = iconButton("edit", "現在のプロファイル名を変更");
+    const deleteProfileButton = iconButton(
+        "delete", "現在のプロファイルと所属プリセットを削除", "sp-icon-button sp-danger"
+    );
+    profileToolbar.append(
+        profileLabel,
+        profileSelect,
+        addProfileButton,
+        editProfileButton,
+        deleteProfileButton,
+    );
+    const profileForm = element("div", "sp-profile-form sp-hidden");
+    const profileNameInput = element("input", "sp-input");
+    profileNameInput.type = "text";
+    profileNameInput.maxLength = 120;
+    profileNameInput.placeholder = "プロファイル名";
+    const cancelProfileButton = iconButton("cancel", "プロファイル編集を取り消す");
+    const saveProfileButton = iconButton("save", "プロファイルを保存", "sp-icon-button sp-primary");
+    profileForm.append(profileNameInput, cancelProfileButton, saveProfileButton);
+    profileSection.append(profileToolbar, profileForm);
 
     const toolbar = element("div", "sp-toolbar");
     const search = element("input", "sp-search");
@@ -416,7 +485,7 @@ function createPresetWidget(node, inputName, inputData) {
     const sortMenuEntry = { control: sortControl, menu: sortMenu };
     sortMenus.add(sortMenuEntry);
     const selectAllButton = iconButton("selectAll", "表示中のプリセットをすべて選択");
-    const clearButton = iconButton("clear", "すべての選択を解除");
+    const clearButton = iconButton("clear", "現在のプロファイルの選択を解除");
     toolbar.append(search, sortControl, selectAllButton, clearButton);
 
     const form = element("div", "sp-form sp-hidden");
@@ -429,12 +498,19 @@ function createPresetWidget(node, inputName, inputData) {
     const promptInput = element("textarea", "sp-textarea");
     promptInput.maxLength = 100000;
     promptInput.placeholder = "プロンプト本文";
+    const presetProfileSelect = element("select", "sp-form-select");
+    presetProfileSelect.setAttribute("aria-label", "所属プロファイル");
+    const presetProfileField = element("div", "sp-form-field");
+    presetProfileField.append(
+        element("span", "sp-form-label", "所属プロファイル"),
+        presetProfileSelect,
+    );
     const formActions = element("div", "sp-form-actions");
     const cancelButton = iconButton("cancel", "編集を取り消す");
     const saveButton = iconButton("save", "プリセットを保存", "sp-icon-button sp-primary");
     formActions.append(cancelButton, saveButton);
     formHeader.append(formTitle, formActions);
-    form.append(formHeader, nameInput, promptInput);
+    form.append(formHeader, nameInput, presetProfileField, promptInput);
 
     const list = element("div", "sp-list");
     list.tabIndex = 0;
@@ -462,18 +538,57 @@ function createPresetWidget(node, inputName, inputData) {
     const summaryText = element("span", "sp-summary-text", "（未選択）");
     summaryText.title = "選択したプロンプトの結合プレビュー";
     summary.append(summaryLabel, summaryText);
-    root.append(header, toolbar, form, list, summary);
+    const selectionNotice = element("div", "sp-selection-notice sp-hidden");
+    root.append(profileSection, header, toolbar, form, list, selectionNotice, summary);
     scrollRegions.add({ root, list, node });
 
     const selectedSet = () => new Set(selectedIds);
+    const profilePresets = () => {
+        if (currentProfileId === ALL_PROFILES) return presets;
+        return presets.filter((preset) => preset.profile_id === currentProfileId);
+    };
     const visiblePresets = () => {
         const query = searchText.trim().toLocaleLowerCase();
-        if (!query) return presets;
-        return presets.filter((preset) =>
+        const scoped = profilePresets();
+        if (!query) return scoped;
+        return scoped.filter((preset) =>
             preset.name.toLocaleLowerCase().includes(query)
             || preset.prompt.toLocaleLowerCase().includes(query)
         );
     };
+
+    function rebuildProfileOptions() {
+        const availableProfiles = new Set(profiles.map((profile) => profile.id));
+        if (
+            currentProfileId !== ALL_PROFILES
+            && !availableProfiles.has(currentProfileId)
+        ) {
+            currentProfileId = availableProfiles.has(DEFAULT_PROFILE_ID)
+                ? DEFAULT_PROFILE_ID
+                : profiles[0]?.id ?? ALL_PROFILES;
+        }
+
+        profileSelect.replaceChildren();
+        profileSelect.append(new Option(`すべてのプリセット (${presets.length})`, ALL_PROFILES));
+        for (const profile of profiles) {
+            const profileCount = presets.filter((preset) => preset.profile_id === profile.id).length;
+            profileSelect.append(new Option(`${profile.name} (${profileCount})`, profile.id));
+        }
+        profileSelect.value = currentProfileId;
+
+        const selectedFormProfile = presetProfileSelect.value;
+        presetProfileSelect.replaceChildren();
+        for (const profile of profiles) {
+            presetProfileSelect.append(new Option(profile.name, profile.id));
+        }
+        if ([...presetProfileSelect.options].some((option) => option.value === selectedFormProfile)) {
+            presetProfileSelect.value = selectedFormProfile;
+        } else if (availableProfiles.has(DEFAULT_PROFILE_ID)) {
+            presetProfileSelect.value = DEFAULT_PROFILE_ID;
+        } else if (profiles.length) {
+            presetProfileSelect.value = profiles[0].id;
+        }
+    }
 
     function markChanged() {
         node.graph?.setDirtyCanvas?.(true, true);
@@ -495,11 +610,20 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     function openForm(preset = null) {
+        editingProfileId = null;
+        profileFormVisible = false;
+        profileNameInput.value = "";
         editingId = preset?.id ?? null;
         formVisible = true;
         formTitle.textContent = preset ? "プリセットを編集" : "プリセットを追加";
         nameInput.value = preset?.name ?? "";
         promptInput.value = preset?.prompt ?? "";
+        presetProfileSelect.value = preset?.profile_id
+            ?? (profiles.some((profile) => profile.id === currentProfileId)
+                ? currentProfileId
+                : profiles.find((profile) => profile.id === DEFAULT_PROFILE_ID)?.id
+                    ?? profiles[0]?.id
+                    ?? "");
         render();
         requestAnimationFrame(() => nameInput.focus());
     }
@@ -512,15 +636,36 @@ function createPresetWidget(node, inputName, inputData) {
         render();
     }
 
+    function openProfileForm(profile = null) {
+        editingId = null;
+        formVisible = false;
+        nameInput.value = "";
+        promptInput.value = "";
+        editingProfileId = profile?.id ?? null;
+        profileFormVisible = true;
+        profileNameInput.value = profile?.name ?? "";
+        profileNameInput.placeholder = profile ? "新しいプロファイル名" : "プロファイル名";
+        render();
+        requestAnimationFrame(() => profileNameInput.focus());
+    }
+
+    function closeProfileForm() {
+        editingProfileId = null;
+        profileFormVisible = false;
+        profileNameInput.value = "";
+        profileNameInput.setCustomValidity("");
+        render();
+    }
+
     async function mutate(path, options) {
         setLoading(true);
         try {
             const payload = await request(path, options);
             notifyLocal(payload);
-            return true;
+            return payload;
         } catch (error) {
             showError(error.message || String(error));
-            return false;
+            return null;
         } finally {
             setLoading(false);
         }
@@ -529,6 +674,10 @@ function createPresetWidget(node, inputName, inputData) {
     async function saveForm() {
         const name = nameInput.value.trim();
         const prompt = promptInput.value;
+        if (!editingId && currentProfileId === ALL_PROFILES) {
+            showError("プリセットを追加するプロファイルを選択してください。");
+            return;
+        }
         if (!name) {
             nameInput.setCustomValidity("プリセット名を入力してください。");
             nameInput.reportValidity();
@@ -541,9 +690,39 @@ function createPresetWidget(node, inputName, inputData) {
             : "/simple-preset/presets";
         const ok = await mutate(path, {
             method: editingId ? "PUT" : "POST",
-            body: JSON.stringify({ name, prompt }),
+            body: JSON.stringify({
+                name,
+                prompt,
+                profile_id: editingId
+                    ? presetProfileSelect.value
+                    : currentProfileId,
+            }),
         });
         if (ok) closeForm();
+    }
+
+    async function saveProfile() {
+        const name = profileNameInput.value.trim();
+        if (!name) {
+            profileNameInput.setCustomValidity("プロファイル名を入力してください。");
+            profileNameInput.reportValidity();
+            profileNameInput.focus();
+            return;
+        }
+        profileNameInput.setCustomValidity("");
+        const path = editingProfileId
+            ? `/simple-preset/profiles/${encodeURIComponent(editingProfileId)}`
+            : "/simple-preset/profiles";
+        const payload = await mutate(path, {
+            method: editingProfileId ? "PUT" : "POST",
+            body: JSON.stringify({ name }),
+        });
+        if (!payload) return;
+        if (payload.created_profile_id) {
+            currentProfileId = payload.created_profile_id;
+            rebuildProfileOptions();
+        }
+        closeProfileForm();
     }
 
     async function removePreset(preset) {
@@ -551,6 +730,16 @@ function createPresetWidget(node, inputName, inputData) {
         await mutate(`/simple-preset/presets/${encodeURIComponent(preset.id)}`, {
             method: "DELETE",
         });
+    }
+
+    async function removeProfile(profile) {
+        const presetCount = presets.filter((preset) => preset.profile_id === profile.id).length;
+        if (!await confirmProfileDelete(profile.name, presetCount)) return;
+        const payload = await mutate(
+            `/simple-preset/profiles/${encodeURIComponent(profile.id)}`,
+            { method: "DELETE" },
+        );
+        if (payload) closeProfileForm();
     }
 
     function updateSortControls() {
@@ -587,30 +776,75 @@ function createPresetWidget(node, inputName, inputData) {
 
     function render() {
         form.classList.toggle("sp-hidden", !formVisible);
+        presetProfileField.classList.toggle("sp-hidden", !editingId);
+        profileForm.classList.toggle("sp-hidden", !profileFormVisible);
         const selected = selectedSet();
+        const scoped = profilePresets();
         const visible = visiblePresets();
-        count.textContent = `${selected.size} / ${presets.length}`;
-        clearButton.disabled = loading || selected.size === 0;
+        const selectedInProfile = scoped.filter((preset) => selected.has(preset.id)).length;
+        const selectedOutsideProfile = selected.size - selectedInProfile;
+        const currentProfile = profiles.find((profile) => profile.id === currentProfileId);
+        const canEditCurrentProfile = Boolean(currentProfile)
+            && currentProfile.id !== DEFAULT_PROFILE_ID;
+        const canDeleteCurrentProfile = Boolean(currentProfile)
+            && currentProfile.id !== DEFAULT_PROFILE_ID
+            && profiles.length > 1;
+        count.textContent = `${selectedInProfile} / ${scoped.length}`;
+        count.title = `全体では${selected.size}件選択中`;
+        const canAddPreset = currentProfileId !== ALL_PROFILES;
+        addButton.disabled = loading || !canAddPreset;
+        const addPresetTitle = canAddPreset
+            ? "現在のプロファイルに新しいプリセットを追加"
+            : "プリセットを追加するプロファイルを選択してください";
+        addButton.title = addPresetTitle;
+        addButton.setAttribute("aria-label", addPresetTitle);
+        saveButton.disabled = loading || (!editingId && currentProfileId === ALL_PROFILES);
+        profileSelect.disabled = loading;
+        addProfileButton.disabled = loading;
+        editProfileButton.disabled = loading || !canEditCurrentProfile;
+        deleteProfileButton.disabled = loading || !canDeleteCurrentProfile;
+        const editProfileTitle = currentProfile?.id === DEFAULT_PROFILE_ID
+            ? "Defaultプロファイルは名前変更できません"
+            : "現在のプロファイル名を変更";
+        const deleteProfileTitle = currentProfile?.id === DEFAULT_PROFILE_ID
+            ? "Defaultプロファイルは削除できません"
+            : profiles.length <= 1 && currentProfile
+                ? "最後のプロファイルは削除できません"
+                : "現在のプロファイルと所属プリセットを削除";
+        editProfileButton.title = editProfileTitle;
+        editProfileButton.setAttribute("aria-label", editProfileTitle);
+        deleteProfileButton.title = deleteProfileTitle;
+        deleteProfileButton.setAttribute("aria-label", deleteProfileTitle);
+        saveProfileButton.disabled = loading;
+        cancelProfileButton.disabled = loading;
+        clearButton.disabled = loading || selectedInProfile === 0;
         selectAllButton.disabled = loading || visible.length === 0
             || visible.every((preset) => selected.has(preset.id));
-        sortButton.disabled = loading || presets.length < 2;
-        sortByNameButton.disabled = loading || presets.length < 2;
-        sortByPromptButton.disabled = loading || presets.length < 2;
-        sortByCreatedButton.disabled = loading || presets.length < 2;
-        sortByUpdatedButton.disabled = loading || presets.length < 2;
-        ascendingButton.disabled = loading || presets.length < 2;
-        descendingButton.disabled = loading || presets.length < 2;
-        if (presets.length < 2) sortMenu.classList.add("sp-hidden");
+        sortButton.disabled = loading || scoped.length < 2;
+        sortByNameButton.disabled = loading || scoped.length < 2;
+        sortByPromptButton.disabled = loading || scoped.length < 2;
+        sortByCreatedButton.disabled = loading || scoped.length < 2;
+        sortByUpdatedButton.disabled = loading || scoped.length < 2;
+        ascendingButton.disabled = loading || scoped.length < 2;
+        descendingButton.disabled = loading || scoped.length < 2;
+        if (scoped.length < 2) sortMenu.classList.add("sp-hidden");
         updateSortControls();
+
+        selectionNotice.classList.toggle(
+            "sp-hidden",
+            currentProfileId === ALL_PROFILES || selectedOutsideProfile === 0,
+        );
+        selectionNotice.textContent = `他のプロファイルで${selectedOutsideProfile}件選択中`;
 
         list.replaceChildren();
         if (!presets.length) {
             list.append(element("div", "sp-empty", "プリセットはまだありません。上部の＋アイコンから登録できます。"));
+        } else if (!scoped.length) {
+            list.append(element("div", "sp-empty", "このプロファイルにはプリセットがありません。"));
         } else if (!visible.length) {
             list.append(element("div", "sp-empty", "検索条件に一致するプリセットがありません。"));
         } else {
-            for (const preset of visible) {
-                const index = presets.findIndex((item) => item.id === preset.id);
+            for (const [index, preset] of visible.entries()) {
                 const row = element("div", `sp-row${selected.has(preset.id) ? " sp-selected" : ""}`);
                 const checkbox = element("input", "sp-check");
                 checkbox.type = "checkbox";
@@ -659,6 +893,7 @@ function createPresetWidget(node, inputName, inputData) {
     const controller = {
         applyPayload(payload) {
             if (!Array.isArray(payload?.presets)) return;
+            profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
             presets = payload.presets;
             const available = new Set(presets.map((preset) => preset.id));
             const retained = selectedIds.filter((id) => available.has(id));
@@ -666,6 +901,7 @@ function createPresetWidget(node, inputName, inputData) {
                 selectedIds = retained;
                 markChanged();
             }
+            rebuildProfileOptions();
             render();
         },
         async refresh({ quiet = false } = {}) {
@@ -684,6 +920,29 @@ function createPresetWidget(node, inputName, inputData) {
 
     reloadButton.addEventListener("click", () => controller.refresh());
     addButton.addEventListener("click", () => openForm());
+    profileSelect.addEventListener("change", () => {
+        currentProfileId = profileSelect.value;
+        sortMenu.classList.add("sp-hidden");
+        render();
+    });
+    addProfileButton.addEventListener("click", () => openProfileForm());
+    editProfileButton.addEventListener("click", () => {
+        const profile = profiles.find((item) => item.id === currentProfileId);
+        if (profile) openProfileForm(profile);
+    });
+    deleteProfileButton.addEventListener("click", () => {
+        const profile = profiles.find((item) => item.id === currentProfileId);
+        if (profile) removeProfile(profile);
+    });
+    cancelProfileButton.addEventListener("click", closeProfileForm);
+    saveProfileButton.addEventListener("click", saveProfile);
+    profileNameInput.addEventListener("input", () => profileNameInput.setCustomValidity(""));
+    profileNameInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            saveProfile();
+        }
+    });
     cancelButton.addEventListener("click", closeForm);
     saveButton.addEventListener("click", saveForm);
     nameInput.addEventListener("keydown", (event) => {
@@ -730,7 +989,10 @@ function createPresetWidget(node, inputName, inputData) {
         for (const preset of visiblePresets()) next.add(preset.id);
         setSelection([...next]);
     });
-    clearButton.addEventListener("click", () => setSelection([]));
+    clearButton.addEventListener("click", () => {
+        const scopedIds = new Set(profilePresets().map((preset) => preset.id));
+        setSelection(selectedIds.filter((id) => !scopedIds.has(id)));
+    });
 
     widget = node.addDOMWidget(inputName, "simple_preset_selection", root, {
         serialize: true,
@@ -739,13 +1001,13 @@ function createPresetWidget(node, inputName, inputData) {
             selectedIds = parseSelection(value);
             render();
         },
-        getMinHeight: () => 430,
-        getMaxHeight: () => 430,
-        getHeight: () => 430,
+        getMinHeight: () => 480,
+        getMaxHeight: () => 480,
+        getHeight: () => 480,
         hideOnZoom: false,
     });
     widget.serializeValue = () => JSON.stringify(selectedIds);
-    widget.computeSize = (width) => [width, 430];
+    widget.computeSize = (width) => [width, 480];
 
     render();
     controller.refresh();
@@ -766,7 +1028,7 @@ app.registerExtension({
     nodeCreated(node) {
         if (node.comfyClass !== "SimplePreset" && node.constructor?.comfyClass !== "SimplePreset") return;
         const [width, height] = node.size;
-        node.setSize([Math.max(width, 430), Math.max(height, 510)]);
+        node.setSize([Math.max(width, 430), Math.max(height, 560)]);
     },
     setup() {
         window.addEventListener("pointerdown", (event) => {

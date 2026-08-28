@@ -1,4 +1,10 @@
 {
-  "version": 1,
+  "version": 3,
+  "profiles": [
+    {
+      "id": "default",
+      "name": "Default"
+    }
+  ],
   "presets": []
 }
