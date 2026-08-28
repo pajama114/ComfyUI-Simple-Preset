@@ -31,7 +31,7 @@ A workflow stores only a JSON array of selected preset IDs in the node widget.
 Names and prompt text remain exclusively in the shared preset file.
 
 Selected non-empty prompts are joined with `, ` in the current displayed order.
-Use the arrow buttons to change that shared order.
+Use the sort menu to change that shared order.
 
 ## Development checks
 

@@ -553,17 +553,6 @@ function createPresetWidget(node, inputName, inputData) {
         });
     }
 
-    async function movePreset(index, offset) {
-        const nextIndex = index + offset;
-        if (nextIndex < 0 || nextIndex >= presets.length) return;
-        const ids = presets.map((preset) => preset.id);
-        [ids[index], ids[nextIndex]] = [ids[nextIndex], ids[index]];
-        await mutate("/simple-preset/order", {
-            method: "POST",
-            body: JSON.stringify({ ids }),
-        });
-    }
-
     function updateSortControls() {
         sortByNameButton.classList.toggle("sp-active", sortKey === "name");
         sortByPromptButton.classList.toggle("sp-active", sortKey === "prompt");
@@ -635,15 +624,11 @@ function createPresetWidget(node, inputName, inputData) {
                 presetPrompt.title = preset.prompt;
                 copy.append(presetName, presetPrompt);
                 const actions = element("div", "sp-actions");
-                const up = iconButton("up", "上へ移動");
-                const down = iconButton("down", "下へ移動");
                 const edit = iconButton("edit", "編集");
                 const remove = iconButton("delete", "削除", "sp-icon-button sp-danger");
-                up.disabled = loading || index === 0;
-                down.disabled = loading || index === presets.length - 1;
                 edit.disabled = loading;
                 remove.disabled = loading;
-                actions.append(up, down, edit, remove);
+                actions.append(edit, remove);
                 row.append(checkbox, order, copy, actions);
 
                 const toggle = () => {
@@ -657,8 +642,6 @@ function createPresetWidget(node, inputName, inputData) {
                     toggle();
                 });
                 checkbox.addEventListener("change", toggle);
-                up.addEventListener("click", () => movePreset(index, -1));
-                down.addEventListener("click", () => movePreset(index, 1));
                 edit.addEventListener("click", () => openForm(preset));
                 remove.addEventListener("click", () => removePreset(preset));
                 list.append(row);
