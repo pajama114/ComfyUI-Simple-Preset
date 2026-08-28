@@ -39,7 +39,7 @@ function installStyles() {
             --sp-row-hover: #e2e5ea;
         }
         .sp-root *, .sp-root *::before, .sp-root *::after { box-sizing: border-box; }
-        .sp-header, .sp-toolbar, .sp-summary, .sp-row, .sp-actions, .sp-form-actions {
+        .sp-header, .sp-toolbar, .sp-summary, .sp-row, .sp-actions, .sp-form-header, .sp-form-actions {
             display: flex; align-items: center;
         }
         .sp-header { gap: 7px; }
@@ -111,9 +111,10 @@ function installStyles() {
             border: 1px solid var(--sp-accent); border-radius: 8px;
             background: var(--sp-panel);
         }
-        .sp-form-title { font-weight: 700; }
-        .sp-textarea { height: 76px; min-height: 76px; resize: none; padding: 7px 8px; }
-        .sp-form-actions { justify-content: flex-end; gap: 6px; }
+        .sp-form-header { min-height: 28px; gap: 8px; }
+        .sp-form-title { min-width: 0; flex: 1; font-weight: 700; }
+        .sp-textarea { height: 108px; min-height: 108px; resize: none; padding: 7px 8px; }
+        .sp-form-actions { flex: none; gap: 6px; }
         .sp-empty {
             margin: auto; padding: 20px; max-width: 270px; text-align: center;
             color: var(--sp-muted); border: 1px dashed var(--sp-border); border-radius: 8px;
@@ -338,6 +339,7 @@ function createPresetWidget(node, inputName, inputData) {
     toolbar.append(search, selectAllButton, clearButton);
 
     const form = element("div", "sp-form sp-hidden");
+    const formHeader = element("div", "sp-form-header");
     const formTitle = element("div", "sp-form-title", "プリセットを追加");
     const nameInput = element("input", "sp-input");
     nameInput.type = "text";
@@ -350,7 +352,8 @@ function createPresetWidget(node, inputName, inputData) {
     const cancelButton = iconButton("cancel", "編集を取り消す");
     const saveButton = iconButton("save", "プリセットを保存", "sp-icon-button sp-primary");
     formActions.append(cancelButton, saveButton);
-    form.append(formTitle, nameInput, promptInput, formActions);
+    formHeader.append(formTitle, formActions);
+    form.append(formHeader, nameInput, promptInput);
 
     const list = element("div", "sp-list");
     list.tabIndex = 0;
