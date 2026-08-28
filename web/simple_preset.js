@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const controllers = new Set();
+const scrollRegions = new Set();
 const channel = typeof BroadcastChannel === "function"
     ? new BroadcastChannel("simple-preset")
     : null;
@@ -18,12 +19,13 @@ function installStyles() {
             --sp-muted: var(--descrip-text, #a5a8ad);
             --sp-text: var(--input-text, #eee);
             --sp-accent: var(--primary-bg, #5e63d8);
+            --sp-row-bg: var(--sp-panel);
+            --sp-row-hover: color-mix(in srgb, var(--sp-accent) 8%, var(--sp-panel));
             box-sizing: border-box;
             width: 100%; height: 100%; min-height: 0;
             display: flex; flex-direction: column; gap: 8px;
-            padding: 10px; overflow: hidden;
-            color: var(--sp-text); background: var(--sp-bg);
-            border: 1px solid var(--sp-border); border-radius: 10px;
+            padding: 4px 2px; overflow: hidden;
+            color: var(--sp-text); background: transparent;
             font: 12px/1.4 Inter, system-ui, sans-serif;
         }
         :root:not(.dark-theme) .sp-root {
@@ -33,7 +35,8 @@ function installStyles() {
             --sp-muted: #626873;
             --sp-text: #202328;
             --sp-accent: var(--p-primary-color, var(--comfy-accent, #5b61d6));
-            box-shadow: 0 1px 3px rgba(20, 24, 32, .08);
+            --sp-row-bg: #eceef2;
+            --sp-row-hover: #e2e5ea;
         }
         .sp-root *, .sp-root *::before, .sp-root *::after { box-sizing: border-box; }
         .sp-header, .sp-toolbar, .sp-summary, .sp-row, .sp-actions, .sp-form-actions {
@@ -73,17 +76,30 @@ function installStyles() {
         .sp-search:focus, .sp-input:focus, .sp-textarea:focus { border-color: var(--sp-accent); }
         .sp-list {
             min-height: 0; height: 0; flex: 1 1 0; overflow-y: auto; overflow-x: hidden;
-            display: flex; contain: size layout;
+            position: relative; display: flex; contain: size layout;
             flex-direction: column; gap: 5px; padding-right: 2px;
-            scrollbar-width: thin;
+            scrollbar-width: auto; scrollbar-color: var(--sp-border) transparent;
+            overscroll-behavior: contain; touch-action: pan-y; pointer-events: auto;
+        }
+        .sp-list::-webkit-scrollbar { width: 10px; }
+        .sp-list::-webkit-scrollbar-track { background: transparent; }
+        .sp-list::-webkit-scrollbar-thumb {
+            background: var(--sp-border); border: 2px solid transparent;
+            border-radius: 999px; background-clip: padding-box;
         }
         .sp-row {
             gap: 7px; min-height: 48px; flex: 0 0 48px; padding: 6px 6px 6px 8px;
             border: 1px solid var(--sp-border); border-radius: 7px;
-            background: var(--sp-panel); cursor: pointer;
+            background: var(--sp-row-bg); cursor: pointer;
         }
-        .sp-row:hover { border-color: color-mix(in srgb, var(--sp-accent) 62%, var(--sp-border)); }
-        .sp-row.sp-selected { border-color: var(--sp-accent); background: color-mix(in srgb, var(--sp-accent) 14%, var(--sp-panel)); }
+        .sp-row:hover {
+            border-color: color-mix(in srgb, var(--sp-accent) 62%, var(--sp-border));
+            background: var(--sp-row-hover);
+        }
+        .sp-row.sp-selected {
+            border-color: var(--sp-accent);
+            background: color-mix(in srgb, var(--sp-accent) 15%, var(--sp-row-bg));
+        }
         .sp-check { width: 16px; height: 16px; accent-color: var(--sp-accent); flex: none; }
         .sp-order { width: 20px; flex: none; text-align: right; color: var(--sp-muted); font-variant-numeric: tabular-nums; }
         .sp-copy { min-width: 0; flex: 1; }
@@ -167,6 +183,83 @@ function parseSelection(value) {
     }
 }
 
+function scrollByWheel(element, event) {
+    const unit = event.deltaMode === 1
+        ? 32
+        : event.deltaMode === 2
+            ? element.clientHeight
+            : 1;
+    element.scrollTop += event.deltaY * unit;
+}
+
+function isNodeSelected(node) {
+    const canvases = [app.canvas, globalThis.LGraphCanvas?.active_canvas];
+    for (const canvas of canvases) {
+        if (!canvas) continue;
+        if (typeof canvas.selectedItems?.has === "function" && canvas.selectedItems.has(node)) {
+            return true;
+        }
+
+        const legacy = canvas.selected_nodes;
+        if (typeof legacy?.has === "function"
+            && (legacy.has(node) || legacy.has(node.id) || legacy.has(String(node.id)))) {
+            return true;
+        }
+        if (Array.isArray(legacy) && (legacy.includes(node) || legacy.includes(node.id))) {
+            return true;
+        }
+        if (legacy && typeof legacy === "object" && legacy[node.id]) {
+            return true;
+        }
+    }
+    return node.is_selected === true || node.selected === true;
+}
+
+function selectNodeFromWidget(node, event) {
+    if (isNodeSelected(node)) return;
+    const canvas = globalThis.LGraphCanvas?.active_canvas ?? app.canvas;
+    if (!canvas) return;
+
+    if (typeof canvas.processNodeSelected === "function") {
+        canvas.processNodeSelected(node, event);
+        return;
+    }
+
+    const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+    if (typeof canvas.selectNode === "function") {
+        canvas.selectNode(node, additive);
+    } else if (typeof canvas.selectItems === "function") {
+        canvas.selectItems([node], additive);
+    }
+    canvas.setDirty?.(true, true);
+}
+
+function captureNodeWheel(event) {
+    for (const region of scrollRegions) {
+        const rect = region.root.getBoundingClientRect();
+        const inside = event.clientX >= rect.left
+            && event.clientX <= rect.right
+            && event.clientY >= rect.top
+            && event.clientY <= rect.bottom;
+        if (!inside) continue;
+        if (!isNodeSelected(region.node)) continue;
+
+        const eventTarget = event.target instanceof Element ? event.target : null;
+        const textarea = eventTarget?.closest(".sp-textarea");
+        const scrollTarget = textarea && textarea.scrollHeight > textarea.clientHeight
+            ? textarea
+            : region.list;
+        if (scrollTarget.scrollHeight > scrollTarget.clientHeight) {
+            scrollByWheel(scrollTarget, event);
+        }
+
+        // Window capture runs before LiteGraph receives the event on its canvas.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+    }
+}
+
 async function request(path, options = {}) {
     const response = await api.fetchApi(path, {
         ...options,
@@ -218,6 +311,9 @@ async function confirmDelete(name) {
 function createPresetWidget(node, inputName, inputData) {
     installStyles();
     const root = element("div", "sp-root");
+    root.addEventListener("pointerdown", (event) => {
+        selectNodeFromWidget(node, event);
+    }, { capture: true });
     let presets = [];
     let selectedIds = parseSelection(inputData?.[1]?.default ?? "[]");
     let editingId = null;
@@ -257,6 +353,24 @@ function createPresetWidget(node, inputName, inputData) {
     form.append(formTitle, nameInput, promptInput, formActions);
 
     const list = element("div", "sp-list");
+    list.tabIndex = 0;
+    list.setAttribute("role", "listbox");
+    list.setAttribute("aria-label", "プリセット一覧");
+    list.addEventListener("wheel", (event) => {
+        if (!isNodeSelected(node)) return;
+        if (list.scrollHeight <= list.clientHeight) return;
+        scrollByWheel(list, event);
+        event.preventDefault();
+        event.stopPropagation();
+    }, { passive: false });
+    list.addEventListener("pointerdown", (event) => event.stopPropagation());
+    list.addEventListener("mousedown", (event) => event.stopPropagation());
+    list.addEventListener("touchmove", (event) => event.stopPropagation(), { passive: true });
+    list.addEventListener("keydown", (event) => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) {
+            event.stopPropagation();
+        }
+    });
     const summary = element("div", "sp-summary");
     const summaryLabel = element("span", "sp-summary-label sp-inline-icon");
     summaryLabel.title = "結合出力";
@@ -265,6 +379,7 @@ function createPresetWidget(node, inputName, inputData) {
     summaryText.title = "選択したプロンプトの結合プレビュー";
     summary.append(summaryLabel, summaryText);
     root.append(header, toolbar, form, list, summary);
+    scrollRegions.add({ root, list, node });
 
     const selectedSet = () => new Set(selectedIds);
     const visiblePresets = () => {
@@ -524,6 +639,10 @@ app.registerExtension({
         node.setSize([Math.max(width, 430), Math.max(height, 510)]);
     },
     setup() {
+        window.addEventListener("wheel", captureNodeWheel, {
+            capture: true,
+            passive: false,
+        });
         api.addEventListener("simple_preset.changed", (event) => {
             for (const controller of controllers) controller.applyPayload(event.detail);
         });
