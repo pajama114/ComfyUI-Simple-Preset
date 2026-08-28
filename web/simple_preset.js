@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 
 const controllers = new Set();
 const scrollRegions = new Set();
+const sortMenus = new Set();
 const channel = typeof BroadcastChannel === "function"
     ? new BroadcastChannel("simple-preset")
     : null;
@@ -66,6 +67,41 @@ function installStyles() {
         .sp-danger { color: #ff8d8d; }
         :root:not(.dark-theme) .sp-danger { color: #c43f47; }
         .sp-toolbar { gap: 6px; }
+        .sp-sort-control { position: relative; flex: none; }
+        .sp-sort-menu {
+            position: absolute; top: calc(100% + 5px); right: 0; z-index: 30;
+            width: 172px; padding: 5px;
+            border: 1px solid var(--sp-border); border-radius: 8px;
+            color: var(--sp-text); background: var(--sp-panel);
+            box-shadow: 0 7px 20px rgba(0, 0, 0, .22);
+        }
+        :root:not(.dark-theme) .sp-sort-menu { box-shadow: 0 7px 20px rgba(30, 35, 45, .14); }
+        .sp-sort-option, .sp-sort-direction-button {
+            appearance: none; border: 0; color: var(--sp-text); background: transparent;
+            font: inherit; cursor: pointer;
+        }
+        .sp-sort-option {
+            width: 100%; min-height: 30px; display: flex; align-items: center; gap: 8px;
+            padding: 5px 7px; border-radius: 5px; text-align: left;
+        }
+        .sp-sort-option svg, .sp-sort-direction-button svg { width: 16px; height: 16px; flex: none; }
+        .sp-sort-option:hover, .sp-sort-option.sp-active { background: var(--sp-row-hover); }
+        .sp-sort-option.sp-active { color: var(--sp-accent); font-weight: 650; }
+        .sp-sort-direction {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+            margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--sp-border);
+        }
+        .sp-sort-direction-button {
+            min-height: 29px; display: flex; align-items: center; justify-content: center; gap: 5px;
+            padding: 4px 6px; border: 1px solid transparent; border-radius: 5px;
+            color: var(--sp-muted);
+        }
+        .sp-sort-direction-button:hover { background: var(--sp-row-hover); }
+        .sp-sort-direction-button.sp-active {
+            border-color: var(--sp-accent); color: var(--sp-accent);
+            background: color-mix(in srgb, var(--sp-accent) 10%, transparent);
+        }
+        .sp-sort-option:disabled, .sp-sort-direction-button:disabled { opacity: .4; cursor: default; }
         .sp-search, .sp-input, .sp-textarea {
             width: 100%; border: 1px solid var(--sp-border); border-radius: 6px;
             outline: none; color: var(--sp-text); background: var(--sp-panel); font: inherit;
@@ -143,6 +179,11 @@ const ICONS = {
     refresh: '<path d="M20 6v5h-5"/><path d="M19 11a7 7 0 1 0 1 5"/>',
     selectAll: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="m8 12 3 3 5-6"/>',
     clear: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="m9 9 6 6m0-6-6 6"/>',
+    sort: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+    name: '<path d="m4 19 5-14 5 14M6 14h6"/><path d="M17 7h4M17 12h4M17 17h4"/>',
+    prompt: '<path d="M5 6h14M5 10h14M5 14h9M5 18h6"/>',
+    created: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M12 13v5M9.5 15.5h5"/>',
+    updated: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/>',
     save: '<path d="M5 4h12l2 2v14H5z"/><path d="M8 4v6h8V4M8 20v-6h8v6"/>',
     cancel: '<path d="m6 6 12 12M18 6 6 18"/>',
     up: '<path d="m6 15 6-6 6 6"/>',
@@ -172,6 +213,19 @@ function iconButton(iconName, title, className = "sp-icon-button") {
     result.setAttribute("aria-label", title);
     result.append(icon(iconName));
     return result;
+}
+
+function labeledIconButton(iconName, label, className) {
+    const result = element("button", className);
+    result.type = "button";
+    result.append(icon(iconName), element("span", "", label));
+    return result;
+}
+
+function closeSortMenus(except = null) {
+    for (const entry of sortMenus) {
+        if (entry !== except) entry.menu.classList.add("sp-hidden");
+    }
 }
 
 function parseSelection(value) {
@@ -321,7 +375,13 @@ function createPresetWidget(node, inputName, inputData) {
     let formVisible = false;
     let loading = false;
     let searchText = "";
+    let sortKey = null;
+    let sortDirectionValue = "asc";
     let widget;
+    const sortCollator = new Intl.Collator(undefined, {
+        numeric: true,
+        sensitivity: "base",
+    });
 
     const header = element("div", "sp-header");
     const title = element("div", "sp-title", "プリセット");
@@ -334,9 +394,30 @@ function createPresetWidget(node, inputName, inputData) {
     const search = element("input", "sp-search");
     search.type = "search";
     search.placeholder = "名前・プロンプトを検索";
+    const sortControl = element("div", "sp-sort-control");
+    const sortButton = iconButton("sort", "並べ替え");
+    const sortMenu = element("div", "sp-sort-menu sp-hidden");
+    const sortByNameButton = labeledIconButton("name", "名前", "sp-sort-option");
+    const sortByPromptButton = labeledIconButton("prompt", "プロンプト", "sp-sort-option");
+    const sortByCreatedButton = labeledIconButton("created", "追加順", "sp-sort-option");
+    const sortByUpdatedButton = labeledIconButton("updated", "更新順", "sp-sort-option");
+    const sortDirectionControl = element("div", "sp-sort-direction");
+    const ascendingButton = labeledIconButton("up", "昇順", "sp-sort-direction-button");
+    const descendingButton = labeledIconButton("down", "降順", "sp-sort-direction-button");
+    sortDirectionControl.append(ascendingButton, descendingButton);
+    sortMenu.append(
+        sortByNameButton,
+        sortByPromptButton,
+        sortByCreatedButton,
+        sortByUpdatedButton,
+        sortDirectionControl,
+    );
+    sortControl.append(sortButton, sortMenu);
+    const sortMenuEntry = { control: sortControl, menu: sortMenu };
+    sortMenus.add(sortMenuEntry);
     const selectAllButton = iconButton("selectAll", "表示中のプリセットをすべて選択");
     const clearButton = iconButton("clear", "すべての選択を解除");
-    toolbar.append(search, selectAllButton, clearButton);
+    toolbar.append(search, sortControl, selectAllButton, clearButton);
 
     const form = element("div", "sp-form sp-hidden");
     const formHeader = element("div", "sp-form-header");
@@ -483,6 +564,38 @@ function createPresetWidget(node, inputName, inputData) {
         });
     }
 
+    function updateSortControls() {
+        sortByNameButton.classList.toggle("sp-active", sortKey === "name");
+        sortByPromptButton.classList.toggle("sp-active", sortKey === "prompt");
+        sortByCreatedButton.classList.toggle("sp-active", sortKey === "created_at");
+        sortByUpdatedButton.classList.toggle("sp-active", sortKey === "updated_at");
+        ascendingButton.classList.toggle("sp-active", sortDirectionValue === "asc");
+        descendingButton.classList.toggle("sp-active", sortDirectionValue === "desc");
+        sortByNameButton.setAttribute("aria-pressed", String(sortKey === "name"));
+        sortByPromptButton.setAttribute("aria-pressed", String(sortKey === "prompt"));
+        sortByCreatedButton.setAttribute("aria-pressed", String(sortKey === "created_at"));
+        sortByUpdatedButton.setAttribute("aria-pressed", String(sortKey === "updated_at"));
+        ascendingButton.setAttribute("aria-pressed", String(sortDirectionValue === "asc"));
+        descendingButton.setAttribute("aria-pressed", String(sortDirectionValue === "desc"));
+    }
+
+    async function sortPresets(key = sortKey) {
+        if (!key) return;
+        sortKey = key;
+        updateSortControls();
+        if (presets.length < 2) return;
+
+        const multiplier = sortDirectionValue === "asc" ? 1 : -1;
+        const ids = [...presets]
+            .sort((left, right) => multiplier * sortCollator.compare(left[key], right[key]))
+            .map((preset) => preset.id);
+        if (ids.every((id, index) => id === presets[index].id)) return;
+        await mutate("/simple-preset/order", {
+            method: "POST",
+            body: JSON.stringify({ ids }),
+        });
+    }
+
     function render() {
         form.classList.toggle("sp-hidden", !formVisible);
         const selected = selectedSet();
@@ -491,6 +604,15 @@ function createPresetWidget(node, inputName, inputData) {
         clearButton.disabled = loading || selected.size === 0;
         selectAllButton.disabled = loading || visible.length === 0
             || visible.every((preset) => selected.has(preset.id));
+        sortButton.disabled = loading || presets.length < 2;
+        sortByNameButton.disabled = loading || presets.length < 2;
+        sortByPromptButton.disabled = loading || presets.length < 2;
+        sortByCreatedButton.disabled = loading || presets.length < 2;
+        sortByUpdatedButton.disabled = loading || presets.length < 2;
+        ascendingButton.disabled = loading || presets.length < 2;
+        descendingButton.disabled = loading || presets.length < 2;
+        if (presets.length < 2) sortMenu.classList.add("sp-hidden");
+        updateSortControls();
 
         list.replaceChildren();
         if (!presets.length) {
@@ -598,6 +720,28 @@ function createPresetWidget(node, inputName, inputData) {
         searchText = search.value;
         render();
     });
+    sortButton.addEventListener("click", () => {
+        if (sortMenu.classList.contains("sp-hidden")) {
+            closeSortMenus(sortMenuEntry);
+            sortMenu.classList.remove("sp-hidden");
+        } else {
+            sortMenu.classList.add("sp-hidden");
+        }
+    });
+    sortByNameButton.addEventListener("click", () => sortPresets("name"));
+    sortByPromptButton.addEventListener("click", () => sortPresets("prompt"));
+    sortByCreatedButton.addEventListener("click", () => sortPresets("created_at"));
+    sortByUpdatedButton.addEventListener("click", () => sortPresets("updated_at"));
+    ascendingButton.addEventListener("click", () => {
+        sortDirectionValue = "asc";
+        updateSortControls();
+        if (sortKey) sortPresets();
+    });
+    descendingButton.addEventListener("click", () => {
+        sortDirectionValue = "desc";
+        updateSortControls();
+        if (sortKey) sortPresets();
+    });
     selectAllButton.addEventListener("click", () => {
         const next = selectedSet();
         for (const preset of visiblePresets()) next.add(preset.id);
@@ -642,6 +786,14 @@ app.registerExtension({
         node.setSize([Math.max(width, 430), Math.max(height, 510)]);
     },
     setup() {
+        window.addEventListener("pointerdown", (event) => {
+            const target = event.target instanceof Node ? event.target : null;
+            for (const entry of sortMenus) {
+                if (!target || !entry.control.contains(target)) {
+                    entry.menu.classList.add("sp-hidden");
+                }
+            }
+        }, { capture: true });
         window.addEventListener("wheel", captureNodeWheel, {
             capture: true,
             passive: false,

@@ -8,6 +8,7 @@ import tempfile
 import threading
 import uuid
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -65,6 +66,30 @@ class PresetStore:
             )
         return prompt
 
+    @staticmethod
+    def _format_timestamp(value: datetime) -> str:
+        return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
+            "+00:00", "Z"
+        )
+
+    @classmethod
+    def _timestamp(cls) -> str:
+        return cls._format_timestamp(datetime.now(timezone.utc))
+
+    @classmethod
+    def _validate_timestamp(cls, value: object, fallback: str) -> str:
+        if value is None:
+            return fallback
+        if not isinstance(value, str):
+            raise PresetValidationError("Preset timestamps must be strings.")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise PresetValidationError("Preset timestamps must be valid ISO 8601 values.") from error
+        if parsed.tzinfo is None:
+            raise PresetValidationError("Preset timestamps must include a timezone.")
+        return cls._format_timestamp(parsed)
+
     @classmethod
     def _validate_document(cls, document: object) -> list[dict[str, str]]:
         if not isinstance(document, dict):
@@ -79,18 +104,29 @@ class PresetStore:
 
         presets: list[dict[str, str]] = []
         seen_ids: set[str] = set()
-        for raw in raw_presets:
+        fallback_base = datetime.now(timezone.utc)
+        for index, raw in enumerate(raw_presets):
             if not isinstance(raw, dict):
                 raise PresetValidationError("Each preset must be an object.")
             preset_id = raw.get("id")
             if not isinstance(preset_id, str) or not preset_id or preset_id in seen_ids:
                 raise PresetValidationError("Every preset must have a unique string id.")
             seen_ids.add(preset_id)
+            fallback_created_at = cls._format_timestamp(
+                fallback_base + timedelta(microseconds=index)
+            )
+            created_at = cls._validate_timestamp(
+                raw.get("created_at"), fallback_created_at
+            )
             presets.append(
                 {
                     "id": preset_id,
                     "name": cls._validate_name(raw.get("name")),
                     "prompt": cls._validate_prompt(raw.get("prompt")),
+                    "created_at": created_at,
+                    "updated_at": cls._validate_timestamp(
+                        raw.get("updated_at"), created_at
+                    ),
                 }
             )
         return presets
@@ -147,10 +183,13 @@ class PresetStore:
             self._reload_if_changed()
             if len(self._presets) >= self.MAX_PRESETS:
                 raise PresetValidationError(f"At most {self.MAX_PRESETS} presets are allowed.")
+            timestamp = self._timestamp()
             preset = {
                 "id": uuid.uuid4().hex,
                 "name": self._validate_name(name),
                 "prompt": self._validate_prompt(prompt),
+                "created_at": timestamp,
+                "updated_at": timestamp,
             }
             self._presets.append(preset)
             self._write()
@@ -163,6 +202,7 @@ class PresetStore:
                 if preset["id"] == preset_id:
                     preset["name"] = self._validate_name(name)
                     preset["prompt"] = self._validate_prompt(prompt)
+                    preset["updated_at"] = self._timestamp()
                     self._write()
                     return deepcopy(preset)
             raise PresetNotFoundError(preset_id)

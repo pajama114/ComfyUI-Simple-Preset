@@ -36,6 +36,32 @@ class PresetStoreTests(unittest.TestCase):
         with self.assertRaises(PresetNotFoundError):
             self.store.delete(second["id"])
 
+    def test_create_and_update_timestamps(self):
+        created_at = "2026-01-02T03:04:05.000000Z"
+        updated_at = "2026-02-03T04:05:06.000000Z"
+        with patch.object(PresetStore, "_timestamp", side_effect=[created_at, updated_at]):
+            preset = self.store.create("Timed", "before")
+            edited = self.store.update(preset["id"], "Timed", "after")
+
+        self.assertEqual(preset["created_at"], created_at)
+        self.assertEqual(preset["updated_at"], created_at)
+        self.assertEqual(edited["created_at"], created_at)
+        self.assertEqual(edited["updated_at"], updated_at)
+
+    def test_existing_presets_without_timestamps_keep_their_order(self):
+        document = {
+            "version": PresetStore.VERSION,
+            "presets": [
+                {"id": "first", "name": "First", "prompt": "one"},
+                {"id": "second", "name": "Second", "prompt": "two"},
+            ],
+        }
+        self.path.write_text(json.dumps(document), encoding="utf-8")
+
+        presets = PresetStore(self.path).list()
+        self.assertLess(presets[0]["created_at"], presets[1]["created_at"])
+        self.assertEqual(presets[0]["updated_at"], presets[0]["created_at"])
+
     def test_multi_select_joins_in_display_order(self):
         first = self.store.create("First", "one")
         second = self.store.create("Second", "two")
