@@ -533,10 +533,10 @@ function createPresetWidget(node, inputName, inputData) {
     });
     const summary = element("div", "sp-summary");
     const summaryLabel = element("span", "sp-summary-label sp-inline-icon");
-    summaryLabel.title = "結合出力";
+    summaryLabel.title = "選択中のプリセット";
     summaryLabel.append(icon("output"));
     const summaryText = element("span", "sp-summary-text", "（未選択）");
-    summaryText.title = "選択したプロンプトの結合プレビュー";
+    summaryText.title = "選択したプリセット名の一覧";
     summary.append(summaryLabel, summaryText);
     const selectionNotice = element("div", "sp-selection-notice sp-hidden");
     root.append(profileSection, header, toolbar, form, list, selectionNotice, summary);
@@ -882,12 +882,12 @@ function createPresetWidget(node, inputName, inputData) {
             }
         }
 
-        const joined = presets
-            .filter((preset) => selected.has(preset.id) && preset.prompt)
-            .map((preset) => preset.prompt)
+        const selectedNames = presets
+            .filter((preset) => selected.has(preset.id))
+            .map((preset) => preset.name)
             .join(", ");
-        summaryText.textContent = joined || "（未選択）";
-        summaryText.title = joined || "選択したプリセットはありません";
+        summaryText.textContent = selectedNames || "（未選択）";
+        summaryText.title = selectedNames || "選択したプリセットはありません";
     }
 
     const controller = {
