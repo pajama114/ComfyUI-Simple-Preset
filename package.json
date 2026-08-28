@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.mjs && node --check web/simple_preset.js"
+  }
+}

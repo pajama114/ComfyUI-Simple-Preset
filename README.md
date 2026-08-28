@@ -2,7 +2,7 @@
 
 Simple Preset is a small, dependency-free ComfyUI custom node for managing named
 prompt presets. Presets are shared between workflows, while each workflow stores
-only its own selected preset IDs.
+only its own selected preset IDs and the profile last displayed by that node.
 
 ## Features
 
@@ -28,8 +28,9 @@ Shared profiles and presets are stored outside the custom-node package in
 node is removed or reinstalled. Writes are atomic, and manually edited valid JSON
 is reloaded automatically.
 
-A workflow stores only a JSON array of selected preset IDs in the node widget.
-Names and prompt text remain exclusively in the shared preset file.
+A workflow stores only a JSON array of selected preset IDs in the node widget and
+the last displayed profile ID in the node properties. Names, prompt text, and
+profile names remain exclusively in the shared preset file.
 
 Changing profiles filters the visible list without clearing selections in other
 profiles. Select-all follows the current search results, while clear-selection
@@ -47,5 +48,5 @@ Use the sort menu to change that shared order.
 
 ```bash
 python -m unittest discover -s tests -v
-node --check web/simple_preset.js
+npm test
 ```
