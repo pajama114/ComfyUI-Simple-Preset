@@ -164,7 +164,7 @@ function installStyles() {
         .sp-list {
             min-height: 0; height: 0; flex: 1 1 0; overflow-y: auto; overflow-x: hidden;
             position: relative; display: flex; contain: size layout;
-            flex-direction: column; gap: 5px; padding-right: 2px;
+            flex-direction: column; gap: 3px; padding-right: 2px;
             scrollbar-width: auto; scrollbar-color: var(--sp-border) transparent;
             overscroll-behavior: contain; touch-action: pan-y; pointer-events: auto;
         }
@@ -175,7 +175,7 @@ function installStyles() {
             border-radius: 999px; background-clip: padding-box;
         }
         .sp-row {
-            gap: 7px; min-height: 48px; flex: 0 0 48px; padding: 6px 6px 6px 8px;
+            gap: 7px; min-height: 38px; flex: 0 0 38px; padding: 1px 6px 1px 8px;
             border: 1px solid var(--sp-border); border-radius: 7px;
             background: var(--sp-row-bg); cursor: pointer;
         }
