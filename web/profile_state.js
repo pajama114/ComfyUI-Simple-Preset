@@ -23,3 +23,8 @@ export function resolveProfileId(profileId, profiles) {
     if (available.has(DEFAULT_PROFILE_ID)) return DEFAULT_PROFILE_ID;
     return profiles[0]?.id ?? ALL_PROFILES;
 }
+
+export function samePresetData(leftProfiles, leftPresets, rightProfiles, rightPresets) {
+    return JSON.stringify([leftProfiles, leftPresets])
+        === JSON.stringify([rightProfiles, rightPresets]);
+}

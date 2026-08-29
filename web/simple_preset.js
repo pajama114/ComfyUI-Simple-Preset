@@ -4,6 +4,7 @@ import {
     ALL_PROFILES,
     DEFAULT_PROFILE_ID,
     resolveProfileId,
+    samePresetData,
     storedProfileId,
     storeProfileId,
 } from "./profile_state.js";
@@ -515,6 +516,7 @@ function createPresetWidget(node, inputName, inputData) {
     let searchText = "";
     let sortKey = null;
     let sortDirectionValue = "asc";
+    let syncToken = 0;
     let widget;
     const sortCollator = new Intl.Collator(undefined, {
         numeric: true,
@@ -824,6 +826,7 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     async function mutate(path, options) {
+        syncToken += 1;
         setLoading(true);
         try {
             const payload = await request(path, options);
@@ -1071,26 +1074,42 @@ function createPresetWidget(node, inputName, inputData) {
     const controller = {
         applyPayload(payload) {
             if (!Array.isArray(payload?.presets)) return;
-            profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
-            presets = payload.presets;
-            const available = new Set(presets.map((preset) => preset.id));
+            const nextProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+            const nextPresets = payload.presets;
+            const dataChanged = !samePresetData(
+                profiles,
+                presets,
+                nextProfiles,
+                nextPresets,
+            );
+            const available = new Set(nextPresets.map((preset) => preset.id));
             const retained = selectedIds.filter((id) => available.has(id));
-            if (retained.length !== selectedIds.length) {
+            const selectionChanged = retained.length !== selectedIds.length;
+            if (!dataChanged && !selectionChanged) return;
+
+            if (dataChanged) {
+                profiles = nextProfiles;
+                presets = nextPresets;
+                syncToken += 1;
+            }
+            if (selectionChanged) {
                 selectedIds = retained;
                 markChanged();
             }
-            rebuildProfileOptions();
+            if (dataChanged) rebuildProfileOptions();
             render();
         },
         async refresh({ quiet = false } = {}) {
-            setLoading(true);
+            const requestToken = ++syncToken;
+            if (!quiet) setLoading(true);
             try {
                 const payload = await request("/simple-preset/presets");
+                if (syncToken !== requestToken) return;
                 controller.applyPayload(payload);
             } catch (error) {
                 if (!quiet) showError(error.message || String(error));
             } finally {
-                setLoading(false);
+                if (!quiet) setLoading(false);
             }
         },
     };

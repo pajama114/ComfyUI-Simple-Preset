@@ -6,6 +6,7 @@ import {
     DEFAULT_PROFILE_ID,
     PROFILE_PROPERTY,
     resolveProfileId,
+    samePresetData,
     storedProfileId,
     storeProfileId,
 } from "../web/profile_state.js";
@@ -46,4 +47,22 @@ test("missing profiles fall back to Default without affecting valid profiles", (
     assert.equal(resolveProfileId("photo", profiles), "photo");
     assert.equal(resolveProfileId("deleted", profiles), DEFAULT_PROFILE_ID);
     assert.equal(resolveProfileId(ALL_PROFILES, profiles), ALL_PROFILES);
+});
+
+test("unchanged shared preset data can skip a focus-time redraw", () => {
+    const profiles = [{ id: DEFAULT_PROFILE_ID, name: "Default" }];
+    const presets = [{ id: "first", name: "First", prompt: "one" }];
+    const reloadedProfiles = JSON.parse(JSON.stringify(profiles));
+    const reloadedPresets = JSON.parse(JSON.stringify(presets));
+
+    assert.equal(
+        samePresetData(profiles, presets, reloadedProfiles, reloadedPresets),
+        true,
+    );
+
+    reloadedPresets[0].prompt = "updated";
+    assert.equal(
+        samePresetData(profiles, presets, reloadedProfiles, reloadedPresets),
+        false,
+    );
 });
