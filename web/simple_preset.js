@@ -80,7 +80,7 @@ function installStyles() {
         .sp-profile-toolbar { gap: 6px; }
         .sp-profile-label { flex: none; color: var(--sp-muted); font-weight: 650; }
         .sp-profile-control { position: relative; min-width: 0; flex: 1; }
-        .sp-profile-button, .sp-form-select {
+        .sp-profile-button {
             min-width: 0; height: 29px; padding: 4px 7px;
             border: 1px solid var(--sp-border); border-radius: 6px;
             outline: none; color: var(--sp-text); background: var(--sp-panel); font: inherit;
@@ -97,8 +97,7 @@ function installStyles() {
             transition: transform .12s;
         }
         .sp-profile-button[aria-expanded="true"] svg { transform: rotate(180deg); }
-        .sp-form-select { width: 100%; }
-        .sp-profile-button:hover, .sp-profile-button:focus, .sp-form-select:focus {
+        .sp-profile-button:hover, .sp-profile-button:focus {
             border-color: var(--sp-accent);
         }
         .sp-profile-button:disabled { opacity: .35; cursor: default; }
@@ -288,6 +287,60 @@ function closePopupMenus(except = null) {
     }
 }
 
+function bindProfileMenu(button, menu, entry) {
+    button.addEventListener("click", () => {
+        if (menu.classList.contains("sp-hidden")) {
+            closePopupMenus(entry);
+            menu.classList.remove("sp-hidden");
+            button.setAttribute("aria-expanded", "true");
+        } else {
+            menu.classList.add("sp-hidden");
+            button.setAttribute("aria-expanded", "false");
+        }
+    });
+    button.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowDown") return;
+        event.preventDefault();
+        closePopupMenus(entry);
+        menu.classList.remove("sp-hidden");
+        button.setAttribute("aria-expanded", "true");
+        menu.querySelector(".sp-active")?.focus();
+    });
+    menu.addEventListener("keydown", (event) => {
+        const options = [...menu.querySelectorAll(".sp-profile-option")];
+        const index = options.indexOf(document.activeElement);
+        if (event.key === "Escape") {
+            event.preventDefault();
+            menu.classList.add("sp-hidden");
+            button.setAttribute("aria-expanded", "false");
+            button.focus();
+        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            const offset = event.key === "ArrowDown" ? 1 : -1;
+            options[(index + offset + options.length) % options.length]?.focus();
+        }
+    });
+}
+
+function renderProfileChoices(menu, choices, selectedId, onSelect) {
+    menu.replaceChildren();
+    for (const choice of choices) {
+        const option = element("button", "sp-profile-option");
+        option.type = "button";
+        option.setAttribute("role", "option");
+        option.dataset.profileId = choice.id;
+        const active = choice.id === selectedId;
+        option.classList.toggle("sp-active", active);
+        option.setAttribute("aria-selected", String(active));
+        option.append(
+            element("span", "sp-profile-option-check", active ? "✓" : ""),
+            element("span", "sp-profile-option-label", choice.label),
+        );
+        option.addEventListener("click", () => onSelect(choice.id));
+        menu.append(option);
+    }
+}
+
 function parseSelection(value) {
     try {
         const parsed = typeof value === "string" ? JSON.parse(value) : value;
@@ -446,6 +499,7 @@ function createPresetWidget(node, inputName, inputData) {
     let presets = [];
     let selectedIds = parseSelection(inputData?.[1]?.default ?? "[]");
     let currentProfileId = storedProfileId(node);
+    let presetFormProfileId = DEFAULT_PROFILE_ID;
     let editingId = null;
     let editingProfileId = null;
     let formVisible = false;
@@ -551,12 +605,29 @@ function createPresetWidget(node, inputName, inputData) {
     const promptInput = element("textarea", "sp-textarea");
     promptInput.maxLength = 100000;
     promptInput.placeholder = "プロンプト本文";
-    const presetProfileSelect = element("select", "sp-form-select");
-    presetProfileSelect.setAttribute("aria-label", "所属プロファイル");
+    const presetProfileControl = element("div", "sp-profile-control");
+    const presetProfileButton = element("button", "sp-profile-button");
+    presetProfileButton.type = "button";
+    presetProfileButton.setAttribute("aria-label", "所属プロファイル");
+    presetProfileButton.setAttribute("aria-haspopup", "listbox");
+    presetProfileButton.setAttribute("aria-expanded", "false");
+    const presetProfileButtonText = element(
+        "span", "sp-profile-button-text", "Default"
+    );
+    presetProfileButton.append(presetProfileButtonText, icon("down"));
+    const presetProfileMenu = element("div", "sp-profile-menu sp-hidden");
+    presetProfileMenu.setAttribute("role", "listbox");
+    presetProfileControl.append(presetProfileButton, presetProfileMenu);
+    const presetProfileMenuEntry = {
+        control: presetProfileControl,
+        menu: presetProfileMenu,
+        button: presetProfileButton,
+    };
+    popupMenus.add(presetProfileMenuEntry);
     const presetProfileField = element("div", "sp-form-field");
     presetProfileField.append(
         element("span", "sp-form-label", "所属プロファイル"),
-        presetProfileSelect,
+        presetProfileControl,
     );
     const formActions = element("div", "sp-form-actions");
     const cancelButton = iconButton("cancel", "編集を取り消す");
@@ -626,39 +697,34 @@ function createPresetWidget(node, inputName, inputData) {
                 ).length})`,
             })),
         ];
-        profileMenu.replaceChildren();
-        for (const choice of choices) {
-            const option = element("button", "sp-profile-option");
-            option.type = "button";
-            option.setAttribute("role", "option");
-            option.dataset.profileId = choice.id;
-            const active = choice.id === currentProfileId;
-            option.classList.toggle("sp-active", active);
-            option.setAttribute("aria-selected", String(active));
-            option.append(
-                element("span", "sp-profile-option-check", active ? "✓" : ""),
-                element("span", "sp-profile-option-label", choice.label),
-            );
-            option.addEventListener("click", () => selectProfile(choice.id));
-            profileMenu.append(option);
-        }
+        renderProfileChoices(profileMenu, choices, currentProfileId, selectProfile);
         profileButtonText.textContent = choices.find(
             (choice) => choice.id === currentProfileId
         )?.label ?? "プロファイルを選択";
 
-        const selectedFormProfile = presetProfileSelect.value;
+        rebuildPresetProfileOptions();
+    }
+
+    function rebuildPresetProfileOptions() {
         const availableProfiles = new Set(profiles.map((profile) => profile.id));
-        presetProfileSelect.replaceChildren();
-        for (const profile of profiles) {
-            presetProfileSelect.append(new Option(profile.name, profile.id));
+        if (!availableProfiles.has(presetFormProfileId)) {
+            presetFormProfileId = availableProfiles.has(DEFAULT_PROFILE_ID)
+                ? DEFAULT_PROFILE_ID
+                : profiles[0]?.id ?? "";
         }
-        if ([...presetProfileSelect.options].some((option) => option.value === selectedFormProfile)) {
-            presetProfileSelect.value = selectedFormProfile;
-        } else if (availableProfiles.has(DEFAULT_PROFILE_ID)) {
-            presetProfileSelect.value = DEFAULT_PROFILE_ID;
-        } else if (profiles.length) {
-            presetProfileSelect.value = profiles[0].id;
-        }
+        const choices = profiles.map((profile) => ({
+            id: profile.id,
+            label: profile.name,
+        }));
+        renderProfileChoices(
+            presetProfileMenu,
+            choices,
+            presetFormProfileId,
+            selectPresetFormProfile,
+        );
+        presetProfileButtonText.textContent = profiles.find(
+            (profile) => profile.id === presetFormProfileId
+        )?.name ?? "プロファイルを選択";
     }
 
     function selectProfile(profileId) {
@@ -670,6 +736,14 @@ function createPresetWidget(node, inputName, inputData) {
         markChanged();
         rebuildProfileOptions();
         render();
+    }
+
+    function selectPresetFormProfile(profileId) {
+        if (!profiles.some((profile) => profile.id === profileId)) return;
+        presetFormProfileId = profileId;
+        presetProfileMenu.classList.add("sp-hidden");
+        presetProfileButton.setAttribute("aria-expanded", "false");
+        rebuildPresetProfileOptions();
     }
 
     function markChanged() {
@@ -700,12 +774,13 @@ function createPresetWidget(node, inputName, inputData) {
         formTitle.textContent = preset ? "プリセットを編集" : "プリセットを追加";
         nameInput.value = preset?.name ?? "";
         promptInput.value = preset?.prompt ?? "";
-        presetProfileSelect.value = preset?.profile_id
+        presetFormProfileId = preset?.profile_id
             ?? (profiles.some((profile) => profile.id === currentProfileId)
                 ? currentProfileId
                 : profiles.find((profile) => profile.id === DEFAULT_PROFILE_ID)?.id
                     ?? profiles[0]?.id
                     ?? "");
+        rebuildPresetProfileOptions();
         render();
         requestAnimationFrame(() => nameInput.focus());
     }
@@ -715,6 +790,8 @@ function createPresetWidget(node, inputName, inputData) {
         formVisible = false;
         nameInput.value = "";
         promptInput.value = "";
+        presetProfileMenu.classList.add("sp-hidden");
+        presetProfileButton.setAttribute("aria-expanded", "false");
         render();
     }
 
@@ -776,7 +853,7 @@ function createPresetWidget(node, inputName, inputData) {
                 name,
                 prompt,
                 profile_id: editingId
-                    ? presetProfileSelect.value
+                    ? presetFormProfileId
                     : currentProfileId,
             }),
         });
@@ -882,6 +959,7 @@ function createPresetWidget(node, inputName, inputData) {
         addButton.title = addPresetTitle;
         addButton.setAttribute("aria-label", addPresetTitle);
         saveButton.disabled = loading || (!editingId && currentProfileId === ALL_PROFILES);
+        presetProfileButton.disabled = loading || profiles.length === 0;
         profileButton.disabled = loading;
         addProfileButton.disabled = loading;
         editProfileButton.disabled = loading || !canEditCurrentProfile;
@@ -913,6 +991,8 @@ function createPresetWidget(node, inputName, inputData) {
         if (loading) {
             profileMenu.classList.add("sp-hidden");
             profileButton.setAttribute("aria-expanded", "false");
+            presetProfileMenu.classList.add("sp-hidden");
+            presetProfileButton.setAttribute("aria-expanded", "false");
         }
         if (scoped.length < 2 || loading) {
             sortMenu.classList.add("sp-hidden");
@@ -1010,38 +1090,12 @@ function createPresetWidget(node, inputName, inputData) {
 
     reloadButton.addEventListener("click", () => controller.refresh());
     addButton.addEventListener("click", () => openForm());
-    profileButton.addEventListener("click", () => {
-        if (profileMenu.classList.contains("sp-hidden")) {
-            closePopupMenus(profileMenuEntry);
-            profileMenu.classList.remove("sp-hidden");
-            profileButton.setAttribute("aria-expanded", "true");
-        } else {
-            profileMenu.classList.add("sp-hidden");
-            profileButton.setAttribute("aria-expanded", "false");
-        }
-    });
-    profileButton.addEventListener("keydown", (event) => {
-        if (event.key !== "ArrowDown") return;
-        event.preventDefault();
-        closePopupMenus(profileMenuEntry);
-        profileMenu.classList.remove("sp-hidden");
-        profileButton.setAttribute("aria-expanded", "true");
-        profileMenu.querySelector(".sp-active")?.focus();
-    });
-    profileMenu.addEventListener("keydown", (event) => {
-        const options = [...profileMenu.querySelectorAll(".sp-profile-option")];
-        const index = options.indexOf(document.activeElement);
-        if (event.key === "Escape") {
-            event.preventDefault();
-            profileMenu.classList.add("sp-hidden");
-            profileButton.setAttribute("aria-expanded", "false");
-            profileButton.focus();
-        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            const offset = event.key === "ArrowDown" ? 1 : -1;
-            options[(index + offset + options.length) % options.length]?.focus();
-        }
-    });
+    bindProfileMenu(profileButton, profileMenu, profileMenuEntry);
+    bindProfileMenu(
+        presetProfileButton,
+        presetProfileMenu,
+        presetProfileMenuEntry,
+    );
     addProfileButton.addEventListener("click", () => openProfileForm());
     editProfileButton.addEventListener("click", () => {
         const profile = profiles.find((item) => item.id === currentProfileId);
