@@ -153,14 +153,14 @@ class PresetStoreTests(unittest.TestCase):
         with self.assertRaises(ProfileNotFoundError):
             self.store.delete_profile(anime["id"])
 
-    def test_multi_select_joins_in_display_order(self):
+    def test_multi_select_joins_in_applied_order(self):
         first = self.store.create("First", "one")
         second = self.store.create("Second", "two")
         third = self.store.create("Third", "three")
 
-        # Click/selection order is deliberately different from display order.
+        # The workflow-local selection order is also the applied/displayed order.
         selected = json.dumps([third["id"], first["id"], second["id"]])
-        self.assertEqual(self.store.join_selected(selected), "one, two, three")
+        self.assertEqual(self.store.join_selected(selected), "three, one, two")
 
         self.store.reorder([third["id"], first["id"], second["id"]])
         self.assertEqual(self.store.join_selected(selected), "three, one, two")
@@ -187,12 +187,18 @@ class PresetStoreTests(unittest.TestCase):
     def test_two_workflows_share_content_and_keep_independent_selections(self):
         first = self.store.create("A", "alpha")
         second = self.store.create("B", "beta")
-        workflow_one_selection = json.dumps([first["id"]])
-        workflow_two_selection = json.dumps([second["id"]])
+        workflow_one_selection = json.dumps([first["id"], second["id"]])
+        workflow_two_selection = json.dumps([second["id"], first["id"]])
 
         reloaded_shared_store = PresetStore(self.path)
-        self.assertEqual(reloaded_shared_store.join_selected(workflow_one_selection), "alpha")
-        self.assertEqual(reloaded_shared_store.join_selected(workflow_two_selection), "beta")
+        self.assertEqual(
+            reloaded_shared_store.join_selected(workflow_one_selection),
+            "alpha, beta",
+        )
+        self.assertEqual(
+            reloaded_shared_store.join_selected(workflow_two_selection),
+            "beta, alpha",
+        )
         self.assertNotIn("alpha", workflow_one_selection)
         self.assertNotIn("beta", workflow_two_selection)
 

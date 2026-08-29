@@ -9,7 +9,7 @@ only its own selected preset IDs and the profile last displayed by that node.
 - One node with one `STRING` output
 - Create, edit, delete, search, and sort named presets in the node
 - Organize presets into shared profiles and filter the list by profile
-- Select multiple presets and join their prompts in the displayed order
+- Select multiple presets, drag the applied preset chips into order, and join their prompts in that order
 - Shared, human-readable JSON storage
 - Independent selection state for every workflow
 - Live refresh across nodes and open browser tabs
@@ -41,8 +41,10 @@ deleted, and every preset belongs to a profile. New presets are assigned to the
 currently displayed profile automatically. Other profiles can be renamed or
 deleted.
 
-Selected non-empty prompts are joined with `, ` in the current displayed order.
-Use the sort menu to change that shared order.
+Selected non-empty prompts are joined with `, ` in the order shown by the applied
+preset chips at the bottom of the node. Drag a rounded preset-name chip to change
+the order for that workflow only. The sort menu continues to change the shared
+preset-list order without changing a workflow's applied order.
 
 ## Development checks
 

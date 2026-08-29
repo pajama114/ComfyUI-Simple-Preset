@@ -28,3 +28,21 @@ export function samePresetData(leftProfiles, leftPresets, rightProfiles, rightPr
     return JSON.stringify([leftProfiles, leftPresets])
         === JSON.stringify([rightProfiles, rightPresets]);
 }
+
+export function moveSelection(selectedIds, movedId, offset) {
+    if (!Array.isArray(selectedIds) || !Number.isInteger(offset) || offset === 0) {
+        return Array.isArray(selectedIds) ? [...selectedIds] : [];
+    }
+    const currentIndex = selectedIds.indexOf(movedId);
+    if (currentIndex < 0) return [...selectedIds];
+    const nextIndex = Math.max(
+        0,
+        Math.min(selectedIds.length - 1, currentIndex + offset),
+    );
+    if (nextIndex === currentIndex) return [...selectedIds];
+
+    const result = [...selectedIds];
+    const [moved] = result.splice(currentIndex, 1);
+    result.splice(nextIndex, 0, moved);
+    return result;
+}

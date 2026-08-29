@@ -23,7 +23,7 @@ class SimplePreset:
     RETURN_NAMES = ("prompt",)
     FUNCTION = "build_prompt"
     CATEGORY = "text/presets"
-    DESCRIPTION = "Select shared named presets and join their prompts in list order."
+    DESCRIPTION = "Select shared named presets and join their prompts in applied order."
 
     def build_prompt(self, selected_presets="[]"):
         return (PRESET_STORE.join_selected(selected_presets),)

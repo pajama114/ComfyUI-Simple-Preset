@@ -429,14 +429,14 @@ class PresetStore:
         return result
 
     def join_selected(self, selected: object) -> str:
-        selected_ids = set(self.parse_selection(selected))
+        selected_ids = self.parse_selection(selected)
         with self._lock:
             self._reload_if_changed()
-            # The shared list is the display order and therefore the join order.
+            by_id = {preset["id"]: preset for preset in self._presets}
             return ", ".join(
-                preset["prompt"]
-                for preset in self._presets
-                if preset["id"] in selected_ids and preset["prompt"]
+                by_id[preset_id]["prompt"]
+                for preset_id in selected_ids
+                if preset_id in by_id and by_id[preset_id]["prompt"]
             )
 
     def change_token(self, selected: object) -> tuple[tuple[int, int] | None, tuple[str, ...]]:

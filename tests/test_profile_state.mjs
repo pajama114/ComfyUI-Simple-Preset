@@ -5,6 +5,7 @@ import {
     ALL_PROFILES,
     DEFAULT_PROFILE_ID,
     PROFILE_PROPERTY,
+    moveSelection,
     resolveProfileId,
     samePresetData,
     storedProfileId,
@@ -65,4 +66,14 @@ test("unchanged shared preset data can skip a focus-time redraw", () => {
         samePresetData(profiles, presets, reloadedProfiles, reloadedPresets),
         false,
     );
+});
+
+test("a selected preset can move left or right without changing the other ids", () => {
+    const selected = ["first", "second", "third"];
+
+    assert.deepEqual(moveSelection(selected, "second", -1), ["second", "first", "third"]);
+    assert.deepEqual(moveSelection(selected, "second", 1), ["first", "third", "second"]);
+    assert.deepEqual(moveSelection(selected, "first", -1), selected);
+    assert.deepEqual(moveSelection(selected, "missing", 1), selected);
+    assert.deepEqual(selected, ["first", "second", "third"]);
 });

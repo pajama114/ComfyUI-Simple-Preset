@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 import {
     ALL_PROFILES,
     DEFAULT_PROFILE_ID,
+    moveSelection,
     resolveProfileId,
     samePresetData,
     storedProfileId,
@@ -217,11 +218,38 @@ function installStyles() {
             color: var(--sp-muted); border: 1px dashed var(--sp-border); border-radius: 8px;
         }
         .sp-summary {
-            gap: 7px; min-height: 31px; padding: 5px 7px;
+            gap: 7px; min-height: 34px; max-height: 92px; padding: 5px 7px;
+            align-items: flex-start; overflow-y: auto;
             border-radius: 7px; background: var(--sp-panel);
+            scrollbar-width: thin; scrollbar-color: var(--sp-border) transparent;
         }
-        .sp-summary-label { width: 17px; height: 17px; flex: none; color: var(--sp-muted); }
-        .sp-summary-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sp-summary-label {
+            width: 17px; height: 17px; margin-top: 2px; flex: none; color: var(--sp-muted);
+        }
+        .sp-summary-chips {
+            min-width: 0; flex: 1; display: flex; flex-wrap: wrap; gap: 4px;
+        }
+        .sp-summary-empty { min-height: 22px; display: flex; align-items: center; color: var(--sp-muted); }
+        .sp-preset-chip {
+            appearance: none; min-width: 0; max-width: 100%; height: 24px;
+            display: inline-flex; align-items: center; padding: 2px 8px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            border: 1px solid var(--sp-border); border-radius: 7px;
+            color: var(--sp-text); background: var(--sp-row-bg); font: inherit;
+            cursor: grab; user-select: none;
+            transition: border-color .12s, background .12s, opacity .12s, transform .12s;
+        }
+        .sp-preset-chip:hover, .sp-preset-chip:focus-visible {
+            outline: none; border-color: var(--sp-accent);
+            background: color-mix(in srgb, var(--sp-accent) 12%, var(--sp-row-bg));
+        }
+        .sp-preset-chip:active { cursor: grabbing; }
+        .sp-preset-chip.sp-dragging {
+            opacity: .38; border-style: dashed; cursor: grabbing;
+        }
+        .sp-summary.sp-drag-active {
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sp-accent) 65%, transparent);
+        }
         .sp-selection-notice {
             min-height: 18px; color: var(--sp-muted); font-size: 11px;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -668,9 +696,10 @@ function createPresetWidget(node, inputName, inputData) {
     const summaryLabel = element("span", "sp-summary-label sp-inline-icon");
     summaryLabel.title = "選択中のプリセット";
     summaryLabel.append(icon("output"));
-    const summaryText = element("span", "sp-summary-text", "（未選択）");
-    summaryText.title = "選択したプリセット名の一覧";
-    summary.append(summaryLabel, summaryText);
+    const summaryChips = element("div", "sp-summary-chips");
+    summaryChips.setAttribute("role", "listbox");
+    summaryChips.setAttribute("aria-label", "適用プリセット（ドラッグで順序変更）");
+    summary.append(summaryLabel, summaryChips);
     const selectionNotice = element("div", "sp-selection-notice sp-hidden");
     root.append(profileSection, header, toolbar, form, list, selectionNotice, summary);
     scrollRegions.add({ root, list, node });
@@ -772,6 +801,25 @@ function createPresetWidget(node, inputName, inputData) {
         selectedIds = parseSelection(nextIds);
         markChanged();
         render();
+    }
+
+    function commitChipOrder() {
+        const nextIds = [...summaryChips.querySelectorAll(".sp-preset-chip")]
+            .map((chip) => chip.dataset.presetId);
+        if (nextIds.length !== selectedIds.length) return render();
+        if (nextIds.every((id, index) => id === selectedIds[index])) return;
+        setSelection(nextIds);
+    }
+
+    function chipInsertionTarget(dragging, event) {
+        const chips = [...summaryChips.querySelectorAll(".sp-preset-chip")]
+            .filter((chip) => chip !== dragging);
+        return chips.find((chip) => {
+            const rect = chip.getBoundingClientRect();
+            if (event.clientY < rect.top) return true;
+            return event.clientY <= rect.bottom
+                && event.clientX < rect.left + rect.width / 2;
+        }) ?? null;
     }
 
     function openForm(preset = null) {
@@ -1063,13 +1111,72 @@ function createPresetWidget(node, inputName, inputData) {
             }
         }
 
-        const selectedNames = presets
-            .filter((preset) => selected.has(preset.id))
-            .map((preset) => preset.name)
-            .join(", ");
-        summaryText.textContent = selectedNames || "（未選択）";
-        summaryText.title = selectedNames || "選択したプリセットはありません";
+        const presetsById = new Map(presets.map((preset) => [preset.id, preset]));
+        summaryChips.replaceChildren();
+        if (!selectedIds.length) {
+            summaryChips.append(element("span", "sp-summary-empty", "（未選択）"));
+        } else {
+            for (const [index, presetId] of selectedIds.entries()) {
+                const preset = presetsById.get(presetId);
+                if (!preset) continue;
+                const chip = element("button", "sp-preset-chip", preset.name);
+                chip.type = "button";
+                chip.draggable = true;
+                chip.dataset.presetId = preset.id;
+                chip.title = `${preset.name}\nドラッグで適用順を変更`;
+                chip.setAttribute("role", "option");
+                chip.setAttribute("aria-selected", "true");
+                chip.setAttribute(
+                    "aria-label",
+                    `${preset.name}、適用順 ${index + 1} / ${selectedIds.length}`,
+                );
+                chip.addEventListener("dragstart", (event) => {
+                    event.stopPropagation();
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", preset.id);
+                    chip.classList.add("sp-dragging");
+                    summary.classList.add("sp-drag-active");
+                });
+                chip.addEventListener("dragend", () => {
+                    chip.classList.remove("sp-dragging");
+                    summary.classList.remove("sp-drag-active");
+                    commitChipOrder();
+                });
+                chip.addEventListener("keydown", (event) => {
+                    if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const offset = event.key === "ArrowLeft" ? -1 : 1;
+                    const nextIds = moveSelection(selectedIds, preset.id, offset);
+                    if (nextIds.every((id, itemIndex) => id === selectedIds[itemIndex])) return;
+                    setSelection(nextIds);
+                    requestAnimationFrame(() => {
+                        [...summaryChips.querySelectorAll(".sp-preset-chip")]
+                            .find((item) => item.dataset.presetId === preset.id)
+                            ?.focus();
+                    });
+                });
+                summaryChips.append(chip);
+            }
+        }
     }
+
+    summary.addEventListener("dragover", (event) => {
+        const dragging = summaryChips.querySelector(".sp-dragging");
+        if (!dragging) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "move";
+        summaryChips.insertBefore(dragging, chipInsertionTarget(dragging, event));
+    });
+    summary.addEventListener("drop", (event) => {
+        if (!summaryChips.querySelector(".sp-dragging")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        commitChipOrder();
+    });
+    summary.addEventListener("pointerdown", (event) => event.stopPropagation());
+    summary.addEventListener("mousedown", (event) => event.stopPropagation());
 
     const controller = {
         applyPayload(payload) {
