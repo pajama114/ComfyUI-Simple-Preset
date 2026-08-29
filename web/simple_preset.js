@@ -194,15 +194,22 @@ function installStyles() {
         .sp-prompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sp-muted); font-size: 11px; }
         .sp-actions { flex: none; gap: 3px; }
         .sp-form {
-            display: flex; flex-direction: column; gap: 7px; padding: 8px;
+            display: flex; flex-direction: column; gap: 7px; padding: 8px; min-height: 0;
             border: 1px solid var(--sp-accent); border-radius: 8px;
             background: var(--sp-panel);
         }
+        .sp-root.sp-form-open .sp-form { flex: 1 1 0; }
+        .sp-root.sp-form-open .sp-list,
+        .sp-root.sp-form-open .sp-selection-notice,
+        .sp-root.sp-form-open .sp-summary { display: none; }
         .sp-form-header { min-height: 28px; gap: 8px; }
         .sp-form-title { min-width: 0; flex: 1; font-weight: 700; }
         .sp-form-field { display: flex; align-items: center; gap: 7px; }
         .sp-form-label { flex: none; color: var(--sp-muted); }
-        .sp-textarea { height: 108px; min-height: 108px; resize: none; padding: 7px 8px; }
+        .sp-textarea {
+            height: auto; min-height: 0; flex: 1 1 0; resize: none;
+            overflow-y: auto; padding: 7px 8px;
+        }
         .sp-form-actions { flex: none; gap: 6px; }
         .sp-empty {
             margin: auto; padding: 20px; max-width: 270px; text-align: center;
@@ -935,6 +942,7 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     function render() {
+        root.classList.toggle("sp-form-open", formVisible);
         form.classList.toggle("sp-hidden", !formVisible);
         presetProfileField.classList.toggle("sp-hidden", !editingId);
         profileForm.classList.toggle("sp-hidden", !profileFormVisible);
