@@ -165,6 +165,28 @@ class PresetStoreTests(unittest.TestCase):
         self.store.reorder([third["id"], first["id"], second["id"]])
         self.assertEqual(self.store.join_selected(selected), "three, one, two")
 
+    def test_selected_prompts_support_all_output_separators(self):
+        first = self.store.create("First", "one")
+        second = self.store.create("Second", "two")
+        selected = [first["id"], second["id"]]
+
+        self.assertEqual(self.store.join_selected(selected, "comma"), "one, two")
+        self.assertEqual(self.store.join_selected(selected, "newline"), "one\ntwo")
+        self.assertEqual(
+            self.store.join_selected(selected, "comma_newline"),
+            "one,\ntwo",
+        )
+        self.assertEqual(self.store.join_selected(selected, "invalid"), "one, two")
+
+    def test_change_token_includes_the_output_separator(self):
+        preset = self.store.create("First", "one")
+        selected = [preset["id"]]
+
+        comma_token = self.store.change_token(selected, "comma")
+        newline_token = self.store.change_token(selected, "newline")
+
+        self.assertNotEqual(comma_token, newline_token)
+
     def test_reorder_requires_every_id_exactly_once(self):
         first = self.store.create("First", "one")
         second = self.store.create("Second", "two")

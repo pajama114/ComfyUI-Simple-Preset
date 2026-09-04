@@ -9,6 +9,13 @@ import {
     storedProfileId,
     storeProfileId,
 } from "./profile_state.js";
+import {
+    DEFAULT_SEPARATOR,
+    SEPARATOR_OPTIONS,
+    SEPARATOR_SETTING_ID,
+    createSeparatorTransportWidget,
+    normalizeSeparator,
+} from "./separator_state.js";
 
 const controllers = new Set();
 const scrollRegions = new Set();
@@ -385,6 +392,18 @@ function parseSelection(value) {
     } catch (_error) {
         return [];
     }
+}
+
+function separatorSettingValue() {
+    const currentSettings = app.extensionManager?.setting;
+    if (typeof currentSettings?.get === "function") {
+        return normalizeSeparator(currentSettings.get(SEPARATOR_SETTING_ID));
+    }
+    return normalizeSeparator(app.ui?.settings?.getSettingValue?.(SEPARATOR_SETTING_ID));
+}
+
+function createSeparatorWidget(node, inputName) {
+    return createSeparatorTransportWidget(node, inputName, separatorSettingValue);
 }
 
 function scrollByWheel(element, event) {
@@ -1329,9 +1348,21 @@ channel?.addEventListener("message", (event) => {
 
 app.registerExtension({
     name: "simple-preset.manager",
+    settings: [
+        {
+            id: SEPARATOR_SETTING_ID,
+            name: "プリセット間の区切り",
+            type: "combo",
+            defaultValue: DEFAULT_SEPARATOR,
+            options: SEPARATOR_OPTIONS,
+            category: ["Simple Preset", "出力", "プリセット間の区切り"],
+            tooltip: "選択したプリセットのプロンプトを結合するときの区切り文字です。",
+        },
+    ],
     getCustomWidgets() {
         return {
             SIMPLE_PRESET_SELECTION: createPresetWidget,
+            SIMPLE_PRESET_SEPARATOR: createSeparatorWidget,
         };
     },
     nodeCreated(node) {

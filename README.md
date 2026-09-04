@@ -41,10 +41,13 @@ deleted, and every preset belongs to a profile. New presets are assigned to the
 currently displayed profile automatically. Other profiles can be renamed or
 deleted.
 
-Selected non-empty prompts are joined with `, ` in the order shown by the applied
-preset chips at the bottom of the node. Drag a rounded preset-name chip to change
-the order for that workflow only. The sort menu continues to change the shared
-preset-list order without changing a workflow's applied order.
+Selected non-empty prompts are joined in the order shown by the applied preset
+chips at the bottom of the node. The separator can be set to comma (`, `), newline,
+or comma plus newline in **Settings > Simple Preset > 出力**. This preference is
+applied at execution time and is not stored in workflow JSON. Drag a rounded
+preset-name chip to change the order for that workflow only. The sort menu
+continues to change the shared preset-list order without changing a workflow's
+applied order.
 
 ## Development checks
 

@@ -34,6 +34,12 @@ class PresetStore:
     MAX_PROFILES = 100
     MAX_NAME_LENGTH = 120
     MAX_PROMPT_LENGTH = 100_000
+    DEFAULT_SEPARATOR = "comma"
+    SEPARATORS = {
+        "comma": ", ",
+        "newline": "\n",
+        "comma_newline": ",\n",
+    }
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -428,22 +434,34 @@ class PresetStore:
                 result.append(item)
         return result
 
-    def join_selected(self, selected: object) -> str:
+    @classmethod
+    def normalize_separator(cls, separator: object) -> str:
+        if isinstance(separator, str) and separator in cls.SEPARATORS:
+            return separator
+        return cls.DEFAULT_SEPARATOR
+
+    def join_selected(
+        self, selected: object, separator: object = DEFAULT_SEPARATOR
+    ) -> str:
         selected_ids = self.parse_selection(selected)
+        delimiter = self.SEPARATORS[self.normalize_separator(separator)]
         with self._lock:
             self._reload_if_changed()
             by_id = {preset["id"]: preset for preset in self._presets}
-            return ", ".join(
+            return delimiter.join(
                 by_id[preset_id]["prompt"]
                 for preset_id in selected_ids
                 if preset_id in by_id and by_id[preset_id]["prompt"]
             )
 
-    def change_token(self, selected: object) -> tuple[tuple[int, int] | None, tuple[str, ...]]:
+    def change_token(
+        self, selected: object, separator: object = DEFAULT_SEPARATOR
+    ) -> tuple[tuple[int, int] | None, tuple[str, ...], str]:
         selected_ids = tuple(self.parse_selection(selected))
+        normalized_separator = self.normalize_separator(separator)
         with self._lock:
             self._reload_if_changed()
-            return (self._file_signature, selected_ids)
+            return (self._file_signature, selected_ids, normalized_separator)
 
 
 PACKAGE_PRESET_FILE = Path(__file__).resolve().parent / "data" / "presets.json"
