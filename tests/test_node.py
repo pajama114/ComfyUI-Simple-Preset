@@ -27,23 +27,21 @@ class SimplePresetNodeTests(unittest.TestCase):
         self.assertEqual(nodes.SimplePreset.RETURN_TYPES, ("STRING",))
         self.assertEqual(nodes.SimplePreset.FUNCTION, "build_prompt")
 
-    def test_node_passes_selection_and_separator_to_store(self):
-        selected = json.dumps(["first", "second"])
+    def test_node_passes_execution_selection_to_store(self):
+        selected = json.dumps({"ids": ["first", "second"], "separator": "newline"})
         with patch.object(nodes.PRESET_STORE, "join_selected", return_value="a\nb") as join:
-            result = nodes.SimplePreset().build_prompt(selected, "newline")
+            result = nodes.SimplePreset().build_prompt(selected)
         self.assertEqual(result, ("a\nb",))
-        join.assert_called_once_with(selected, "newline")
-        self.assertEqual(
-            list(nodes.SimplePreset.INPUT_TYPES()["required"]),
-            ["selected_presets", "separator"],
-        )
+        join.assert_called_once_with(selected)
+        self.assertEqual(list(nodes.SimplePreset.INPUT_TYPES()["required"]), ["selected_presets"])
 
-    def test_change_token_receives_separator(self):
+    def test_change_token_receives_execution_selection(self):
+        selected = '{"ids":["first"],"separator":"comma_newline"}'
         with patch.object(nodes.PRESET_STORE, "change_token", return_value="token") as token:
-            result = nodes.SimplePreset.IS_CHANGED('["first"]', "comma_newline")
+            result = nodes.SimplePreset.IS_CHANGED(selected)
 
         self.assertEqual(result, "token")
-        token.assert_called_once_with('["first"]', "comma_newline")
+        token.assert_called_once_with(selected)
 
     def test_http_routes_register_with_comfy_server_contract(self):
         registered = []

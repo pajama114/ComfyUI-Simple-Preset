@@ -424,6 +424,8 @@ class PresetStore:
                 selected = json.loads(selected)
             except (json.JSONDecodeError, TypeError):
                 return []
+        if isinstance(selected, dict):
+            selected = selected.get("ids")
         if not isinstance(selected, list):
             return []
         result: list[str] = []
@@ -435,16 +437,32 @@ class PresetStore:
         return result
 
     @classmethod
+    def selection_separator(cls, selected: object) -> str:
+        if isinstance(selected, str):
+            try:
+                selected = json.loads(selected)
+            except (json.JSONDecodeError, TypeError):
+                return cls.DEFAULT_SEPARATOR
+        if not isinstance(selected, dict):
+            return cls.DEFAULT_SEPARATOR
+        return cls.normalize_separator(selected.get("separator"))
+
+    @classmethod
     def normalize_separator(cls, separator: object) -> str:
         if isinstance(separator, str) and separator in cls.SEPARATORS:
             return separator
         return cls.DEFAULT_SEPARATOR
 
     def join_selected(
-        self, selected: object, separator: object = DEFAULT_SEPARATOR
+        self, selected: object, separator: object | None = None
     ) -> str:
         selected_ids = self.parse_selection(selected)
-        delimiter = self.SEPARATORS[self.normalize_separator(separator)]
+        normalized_separator = (
+            self.selection_separator(selected)
+            if separator is None
+            else self.normalize_separator(separator)
+        )
+        delimiter = self.SEPARATORS[normalized_separator]
         with self._lock:
             self._reload_if_changed()
             by_id = {preset["id"]: preset for preset in self._presets}
@@ -455,10 +473,14 @@ class PresetStore:
             )
 
     def change_token(
-        self, selected: object, separator: object = DEFAULT_SEPARATOR
+        self, selected: object, separator: object | None = None
     ) -> tuple[tuple[int, int] | None, tuple[str, ...], str]:
         selected_ids = tuple(self.parse_selection(selected))
-        normalized_separator = self.normalize_separator(separator)
+        normalized_separator = (
+            self.selection_separator(selected)
+            if separator is None
+            else self.normalize_separator(separator)
+        )
         with self._lock:
             self._reload_if_changed()
             return (self._file_signature, selected_ids, normalized_separator)

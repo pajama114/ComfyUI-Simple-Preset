@@ -178,12 +178,21 @@ class PresetStoreTests(unittest.TestCase):
         )
         self.assertEqual(self.store.join_selected(selected, "invalid"), "one, two")
 
+        execution_selection = json.dumps(
+            {"ids": selected, "separator": "comma_newline"}
+        )
+        self.assertEqual(self.store.join_selected(execution_selection), "one,\ntwo")
+
     def test_change_token_includes_the_output_separator(self):
         preset = self.store.create("First", "one")
         selected = [preset["id"]]
 
-        comma_token = self.store.change_token(selected, "comma")
-        newline_token = self.store.change_token(selected, "newline")
+        comma_token = self.store.change_token(
+            {"ids": selected, "separator": "comma"}
+        )
+        newline_token = self.store.change_token(
+            {"ids": selected, "separator": "newline"}
+        )
 
         self.assertNotEqual(comma_token, newline_token)
 

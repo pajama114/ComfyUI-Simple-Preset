@@ -4,8 +4,9 @@ import test from "node:test";
 import {
     DEFAULT_SEPARATOR,
     SEPARATOR_OPTIONS,
-    createSeparatorTransportWidget,
+    executionSelectionValue,
     normalizeSeparator,
+    removeLegacyInternalInputs,
 } from "../web/separator_state.js";
 
 test("separator values are normalized to the comma default", () => {
@@ -18,21 +19,26 @@ test("separator values are normalized to the comma default", () => {
     );
 });
 
-test("separator transport is sent to execution but omitted from workflow state", () => {
-    let currentSeparator = "newline";
-    const widgets = [];
-    const node = { addCustomWidget: (widget) => widgets.push(widget) };
-    const { widget } = createSeparatorTransportWidget(
-        node,
-        "separator",
-        () => currentSeparator,
+test("execution selection includes the current separator", () => {
+    assert.deepEqual(
+        JSON.parse(executionSelectionValue(["first", "second"], "newline")),
+        { ids: ["first", "second"], separator: "newline" },
     );
+});
 
-    assert.equal(widgets[0], widget);
-    assert.equal(widget.serialize, false);
-    assert.notEqual(widget.options.serialize, false);
-    assert.equal(widget.serializeValue(), "newline");
+test("legacy internal sockets are removed from loaded nodes", () => {
+    const node = {
+        inputs: [
+            { name: "model" },
+            { name: "selected_presets" },
+            { name: "separator" },
+        ],
+        removeInput(index) {
+            this.inputs.splice(index, 1);
+        },
+    };
 
-    currentSeparator = "comma_newline";
-    assert.equal(widget.serializeValue(), "comma_newline");
+    assert.equal(removeLegacyInternalInputs(node), 2);
+    assert.deepEqual(node.inputs, [{ name: "model" }]);
+    assert.equal(removeLegacyInternalInputs(node), 0);
 });

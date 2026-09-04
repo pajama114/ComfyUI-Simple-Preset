@@ -16,10 +16,6 @@ class SimplePreset:
                     "SIMPLE_PRESET_SELECTION",
                     {"default": "[]"},
                 ),
-                "separator": (
-                    "SIMPLE_PRESET_SEPARATOR",
-                    {"default": "comma"},
-                ),
             }
         }
 
@@ -29,13 +25,13 @@ class SimplePreset:
     CATEGORY = "text/presets"
     DESCRIPTION = "Select shared named presets and join their prompts in applied order."
 
-    def build_prompt(self, selected_presets="[]", separator="comma"):
-        return (PRESET_STORE.join_selected(selected_presets, separator),)
+    def build_prompt(self, selected_presets="[]"):
+        return (PRESET_STORE.join_selected(selected_presets),)
 
     @classmethod
-    def IS_CHANGED(cls, selected_presets="[]", separator="comma"):
+    def IS_CHANGED(cls, selected_presets="[]"):
         # Shared JSON changes must invalidate ComfyUI's execution cache.
-        return PRESET_STORE.change_token(selected_presets, separator)
+        return PRESET_STORE.change_token(selected_presets)
 
 
 NODE_CLASS_MAPPINGS = {"SimplePreset": SimplePreset}

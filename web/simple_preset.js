@@ -13,8 +13,9 @@ import {
     DEFAULT_SEPARATOR,
     SEPARATOR_OPTIONS,
     SEPARATOR_SETTING_ID,
-    createSeparatorTransportWidget,
+    executionSelectionValue,
     normalizeSeparator,
+    removeLegacyInternalInputs,
 } from "./separator_state.js";
 
 const controllers = new Set();
@@ -400,10 +401,6 @@ function separatorSettingValue() {
         return normalizeSeparator(currentSettings.get(SEPARATOR_SETTING_ID));
     }
     return normalizeSeparator(app.ui?.settings?.getSettingValue?.(SEPARATOR_SETTING_ID));
-}
-
-function createSeparatorWidget(node, inputName) {
-    return createSeparatorTransportWidget(node, inputName, separatorSettingValue);
 }
 
 function scrollByWheel(element, event) {
@@ -1333,8 +1330,12 @@ function createPresetWidget(node, inputName, inputData) {
         getMaxHeight: () => 480,
         getHeight: () => 480,
         hideOnZoom: false,
+        socketless: true,
     });
-    widget.serializeValue = () => JSON.stringify(selectedIds);
+    widget.serializeValue = () => executionSelectionValue(
+        selectedIds,
+        separatorSettingValue(),
+    );
     widget.computeSize = (width) => [width, 480];
 
     render();
@@ -1362,13 +1363,17 @@ app.registerExtension({
     getCustomWidgets() {
         return {
             SIMPLE_PRESET_SELECTION: createPresetWidget,
-            SIMPLE_PRESET_SEPARATOR: createSeparatorWidget,
         };
     },
     nodeCreated(node) {
         if (node.comfyClass !== "SimplePreset" && node.constructor?.comfyClass !== "SimplePreset") return;
+        removeLegacyInternalInputs(node);
         const [width, height] = node.size;
         node.setSize([Math.max(width, 430), Math.max(height, 560)]);
+    },
+    loadedGraphNode(node) {
+        if (node.comfyClass !== "SimplePreset" && node.constructor?.comfyClass !== "SimplePreset") return;
+        removeLegacyInternalInputs(node);
     },
     setup() {
         window.addEventListener("pointerdown", (event) => {
