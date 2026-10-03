@@ -21,6 +21,7 @@ import {
 const controllers = new Set();
 const scrollRegions = new Set();
 const popupMenus = new Set();
+let profileControlId = 0;
 const channel = typeof BroadcastChannel === "function"
     ? new BroadcastChannel("simple-preset")
     : null;
@@ -387,7 +388,8 @@ function renderProfileChoices(menu, choices, selectedId, onSelect) {
 
 function parseSelection(value) {
     try {
-        const parsed = typeof value === "string" ? JSON.parse(value) : value;
+        let parsed = typeof value === "string" ? JSON.parse(value) : value;
+        if (parsed && !Array.isArray(parsed) && typeof parsed === "object") parsed = parsed.ids;
         if (!Array.isArray(parsed)) return [];
         return [...new Set(parsed.filter((item) => typeof item === "string"))];
     } catch (_error) {
@@ -465,9 +467,10 @@ function captureNodeWheel(event) {
         if (!isNodeSelected(region.node)) continue;
 
         const eventTarget = event.target instanceof Element ? event.target : null;
-        const textarea = eventTarget?.closest(".sp-textarea");
-        const scrollTarget = textarea && textarea.scrollHeight > textarea.clientHeight
-            ? textarea
+        const nestedScroller = eventTarget?.closest(".sp-textarea, .sp-summary, .sp-profile-menu");
+        const scrollTarget = nestedScroller && region.root.contains(nestedScroller)
+            && nestedScroller.scrollHeight > nestedScroller.clientHeight
+            ? nestedScroller
             : region.list;
         if (scrollTarget.scrollHeight > scrollTarget.clientHeight) {
             scrollByWheel(scrollTarget, event);
@@ -561,6 +564,9 @@ function createPresetWidget(node, inputName, inputData) {
     let sortKey = null;
     let sortDirectionValue = "asc";
     let syncToken = 0;
+    let active = true;
+    let activation = 0;
+    let snapshotRevision = null;
     let widget;
     const sortCollator = new Intl.Collator(undefined, {
         numeric: true,
@@ -587,8 +593,9 @@ function createPresetWidget(node, inputName, inputData) {
     const profileMenu = element("div", "sp-profile-menu sp-hidden");
     profileMenu.setAttribute("role", "listbox");
     profileControl.append(profileButton, profileMenu);
-    profileLabel.htmlFor = `sp-profile-${node.id}`;
-    profileButton.id = `sp-profile-${node.id}`;
+    // ComfyUI has not assigned node IDs yet when custom widgets are created.
+    profileButton.id = `sp-profile-${++profileControlId}`;
+    profileLabel.htmlFor = profileButton.id;
     const addProfileButton = iconButton("add", "新しいプロファイルを追加");
     const editProfileButton = iconButton("edit", "現在のプロファイル名を変更");
     const deleteProfileButton = iconButton(
@@ -718,7 +725,8 @@ function createPresetWidget(node, inputName, inputData) {
     summary.append(summaryLabel, summaryChips);
     const selectionNotice = element("div", "sp-selection-notice sp-hidden");
     root.append(profileSection, header, toolbar, form, list, selectionNotice, summary);
-    scrollRegions.add({ root, list, node });
+    const scrollRegion = { root, list, node };
+    scrollRegions.add(scrollRegion);
 
     const selectedSet = () => new Set(selectedIds);
     const profilePresets = () => {
@@ -890,21 +898,24 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     async function mutate(path, options) {
+        if (loading || !active) return null;
+        const requestActivation = activation;
         syncToken += 1;
         setLoading(true);
         try {
             const payload = await request(path, options);
             notifyLocal(payload);
-            return payload;
+            return active && activation === requestActivation ? payload : null;
         } catch (error) {
-            showError(error.message || String(error));
+            if (active && activation === requestActivation) showError(error.message || String(error));
             return null;
         } finally {
-            setLoading(false);
+            if (activation === requestActivation) setLoading(false);
         }
     }
 
     async function saveForm() {
+        if (loading || !active) return;
         const name = nameInput.value.trim();
         const prompt = promptInput.value;
         if (!editingId && currentProfileId === ALL_PROFILES) {
@@ -935,6 +946,7 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     async function saveProfile() {
+        if (loading || !active) return;
         const name = profileNameInput.value.trim();
         if (!name) {
             profileNameInput.setCustomValidity("プロファイル名を入力してください。");
@@ -992,15 +1004,20 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     async function sortPresets(key = sortKey) {
-        if (!key) return;
+        if (!key || loading || !active) return;
         sortKey = key;
         updateSortControls();
-        if (presets.length < 2) return;
+        const scoped = profilePresets();
+        if (scoped.length < 2) return;
 
         const multiplier = sortDirectionValue === "asc" ? 1 : -1;
-        const ids = [...presets]
+        const sorted = [...scoped]
             .sort((left, right) => multiplier * sortCollator.compare(left[key], right[key]))
             .map((preset) => preset.id);
+        const scopedIds = new Set(sorted);
+        let sortedIndex = 0;
+        const ids = presets.map((preset) => scopedIds.has(preset.id)
+            ? sorted[sortedIndex++] : preset.id);
         if (ids.every((id, index) => id === presets[index].id)) return;
         await mutate("/simple-preset/order", {
             method: "POST",
@@ -1009,6 +1026,7 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     function render() {
+        summary.classList.remove("sp-drag-active");
         root.classList.toggle("sp-form-open", formVisible);
         form.classList.toggle("sp-hidden", !formVisible);
         presetProfileField.classList.toggle("sp-hidden", !editingId);
@@ -1052,6 +1070,10 @@ function createPresetWidget(node, inputName, inputData) {
         deleteProfileButton.title = deleteProfileTitle;
         deleteProfileButton.setAttribute("aria-label", deleteProfileTitle);
         saveProfileButton.disabled = loading;
+        cancelButton.disabled = loading;
+        nameInput.disabled = loading;
+        promptInput.disabled = loading;
+        profileNameInput.disabled = loading;
         cancelProfileButton.disabled = loading;
         clearButton.disabled = loading || selectedInProfile === 0;
         selectAllButton.disabled = loading || visible.length === 0
@@ -1156,7 +1178,8 @@ function createPresetWidget(node, inputName, inputData) {
                 chip.addEventListener("dragend", () => {
                     chip.classList.remove("sp-dragging");
                     summary.classList.remove("sp-drag-active");
-                    commitChipOrder();
+                    // Only dropping inside the summary commits the previewed order.
+                    render();
                 });
                 chip.addEventListener("keydown", (event) => {
                     if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
@@ -1189,6 +1212,7 @@ function createPresetWidget(node, inputName, inputData) {
         if (!summaryChips.querySelector(".sp-dragging")) return;
         event.preventDefault();
         event.stopPropagation();
+        summary.classList.remove("sp-drag-active");
         commitChipOrder();
     });
     summary.addEventListener("pointerdown", (event) => event.stopPropagation());
@@ -1196,7 +1220,12 @@ function createPresetWidget(node, inputName, inputData) {
 
     const controller = {
         applyPayload(payload) {
-            if (!Array.isArray(payload?.presets)) return;
+            if (!active || !Array.isArray(payload?.presets)) return;
+            if (typeof payload.store_id === "string" && Number.isSafeInteger(payload.revision)) {
+                if (snapshotRevision?.storeId === payload.store_id
+                    && snapshotRevision.revision > payload.revision) return;
+                snapshotRevision = { storeId: payload.store_id, revision: payload.revision };
+            }
             const nextProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
             const nextPresets = payload.presets;
             const dataChanged = !samePresetData(
@@ -1223,6 +1252,8 @@ function createPresetWidget(node, inputName, inputData) {
             render();
         },
         async refresh({ quiet = false } = {}) {
+            if (!active || loading) return;
+            const requestActivation = activation;
             const requestToken = ++syncToken;
             if (!quiet) setLoading(true);
             try {
@@ -1230,9 +1261,11 @@ function createPresetWidget(node, inputName, inputData) {
                 if (syncToken !== requestToken) return;
                 controller.applyPayload(payload);
             } catch (error) {
-                if (!quiet) showError(error.message || String(error));
+                if (!quiet && active && activation === requestActivation) {
+                    showError(error.message || String(error));
+                }
             } finally {
-                if (!quiet) setLoading(false);
+                if (!quiet && activation === requestActivation) setLoading(false);
             }
         },
     };
@@ -1323,7 +1356,11 @@ function createPresetWidget(node, inputName, inputData) {
         setValue: (value) => {
             selectedIds = parseSelection(value);
             currentProfileId = storedProfileId(node);
-            if (profiles.length) rebuildProfileOptions();
+            if (profiles.length) {
+                const available = new Set(presets.map((preset) => preset.id));
+                selectedIds = selectedIds.filter((id) => available.has(id));
+                rebuildProfileOptions();
+            }
             render();
         },
         getMinHeight: () => 480,
@@ -1337,6 +1374,45 @@ function createPresetWidget(node, inputName, inputData) {
         separatorSettingValue(),
     );
     widget.computeSize = (width) => [width, 480];
+
+    function deactivate() {
+        active = false;
+        activation += 1;
+        syncToken += 1;
+        setLoading(false);
+        controllers.delete(controller);
+        scrollRegions.delete(scrollRegion);
+        for (const entry of [profileMenuEntry, presetProfileMenuEntry, sortMenuEntry]) {
+            entry.menu.classList.add("sp-hidden");
+            entry.button?.setAttribute("aria-expanded", "false");
+            popupMenus.delete(entry);
+        }
+    }
+
+    const onRemove = widget.onRemove;
+    widget.onRemove = function (...args) {
+        deactivate();
+        return onRemove?.apply(this, args);
+    };
+    const onRemoved = node.onRemoved;
+    node.onRemoved = function (...args) {
+        deactivate();
+        return onRemoved?.apply(this, args);
+    };
+    const onAdded = node.onAdded;
+    node.onAdded = function (...args) {
+        const result = onAdded?.apply(this, args);
+        if (!active) {
+            active = true;
+            controllers.add(controller);
+            scrollRegions.add(scrollRegion);
+            for (const entry of [profileMenuEntry, presetProfileMenuEntry, sortMenuEntry]) {
+                popupMenus.add(entry);
+            }
+            controller.refresh();
+        }
+        return result;
+    };
 
     render();
     controller.refresh();

@@ -18,6 +18,9 @@ def register_routes() -> bool:
     except ImportError:
         return False
 
+    if getattr(PromptServer, "instance", None) is None:
+        return False
+
     if getattr(PromptServer.instance, "_simple_preset_routes_registered", False):
         return True
 
@@ -26,9 +29,9 @@ def register_routes() -> bool:
     def response_payload():
         return PRESET_STORE.snapshot()
 
-    def notify_clients():
+    def notify_clients(payload):
         try:
-            PromptServer.instance.send_sync("simple_preset.changed", response_payload())
+            PromptServer.instance.send_sync("simple_preset.changed", payload)
         except (AttributeError, RuntimeError):
             # A response still updates the initiating client; notification is best effort.
             pass
@@ -43,6 +46,11 @@ def register_routes() -> bool:
         return payload
 
     def error_response(error):
+        if isinstance(error, OSError):
+            detail = error.strerror or str(error)
+            return web.json_response(
+                {"error": f"Could not read or write shared presets: {detail}"}, status=500
+            )
         if isinstance(error, PresetNotFoundError):
             return web.json_response({"error": "Preset not found."}, status=404)
         if isinstance(error, ProfileNotFoundError):
@@ -53,7 +61,7 @@ def register_routes() -> bool:
     async def get_presets(_request):
         try:
             return web.json_response(response_payload())
-        except PresetValidationError as error:
+        except (PresetValidationError, OSError) as error:
             return error_response(error)
 
     @routes.post("/simple-preset/presets")
@@ -64,9 +72,9 @@ def register_routes() -> bool:
                 payload.get("name"), payload.get("prompt"), payload.get("profile_id")
             )
             result = response_payload()
-            notify_clients()
+            notify_clients(result)
             return web.json_response(result, status=201)
-        except (PresetValidationError, ProfileNotFoundError) as error:
+        except (PresetValidationError, ProfileNotFoundError, OSError) as error:
             return error_response(error)
 
     @routes.put("/simple-preset/presets/{preset_id}")
@@ -80,9 +88,9 @@ def register_routes() -> bool:
                 payload.get("profile_id"),
             )
             result = response_payload()
-            notify_clients()
+            notify_clients(result)
             return web.json_response(result)
-        except (PresetValidationError, PresetNotFoundError, ProfileNotFoundError) as error:
+        except (PresetValidationError, PresetNotFoundError, ProfileNotFoundError, OSError) as error:
             return error_response(error)
 
     @routes.delete("/simple-preset/presets/{preset_id}")
@@ -90,9 +98,9 @@ def register_routes() -> bool:
         try:
             PRESET_STORE.delete(request.match_info["preset_id"])
             result = response_payload()
-            notify_clients()
+            notify_clients(result)
             return web.json_response(result)
-        except (PresetValidationError, PresetNotFoundError) as error:
+        except (PresetValidationError, PresetNotFoundError, OSError) as error:
             return error_response(error)
 
     @routes.post("/simple-preset/order")
@@ -101,9 +109,9 @@ def register_routes() -> bool:
             payload = await read_json(request)
             PRESET_STORE.reorder(payload.get("ids"))
             result = response_payload()
-            notify_clients()
+            notify_clients(result)
             return web.json_response(result)
-        except PresetValidationError as error:
+        except (PresetValidationError, OSError) as error:
             return error_response(error)
 
     @routes.post("/simple-preset/profiles")
@@ -113,9 +121,9 @@ def register_routes() -> bool:
             profile = PRESET_STORE.create_profile(payload.get("name"))
             result = response_payload()
             result["created_profile_id"] = profile["id"]
-            notify_clients()
+            notify_clients(result)
             return web.json_response(result, status=201)
-        except PresetValidationError as error:
+        except (PresetValidationError, OSError) as error:
             return error_response(error)
 
     @routes.put("/simple-preset/profiles/{profile_id}")
@@ -124,9 +132,9 @@ def register_routes() -> bool:
             payload = await read_json(request)
             PRESET_STORE.update_profile(request.match_info["profile_id"], payload.get("name"))
             result = response_payload()
-            notify_clients()
+            notify_clients(result)
             return web.json_response(result)
-        except (PresetValidationError, ProfileNotFoundError) as error:
+        except (PresetValidationError, ProfileNotFoundError, OSError) as error:
             return error_response(error)
 
     @routes.delete("/simple-preset/profiles/{profile_id}")
@@ -135,9 +143,9 @@ def register_routes() -> bool:
             deleted_presets = PRESET_STORE.delete_profile(request.match_info["profile_id"])
             result = response_payload()
             result["deleted_presets"] = deleted_presets
-            notify_clients()
+            notify_clients(result)
             return web.json_response(result)
-        except (PresetValidationError, ProfileNotFoundError) as error:
+        except (PresetValidationError, ProfileNotFoundError, OSError) as error:
             return error_response(error)
 
     PromptServer.instance._simple_preset_routes_registered = True

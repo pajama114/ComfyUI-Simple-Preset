@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
 import threading
 import uuid
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,25 +43,42 @@ class PresetStore:
         "comma_newline": ",\n",
     }
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, load_on_init: bool = True):
         self.path = Path(path)
         self._lock = threading.RLock()
         self._profiles: list[dict[str, str]] = [self._default_profile()]
         self._presets: list[dict[str, str]] = []
-        self._file_signature: tuple[int, int] | None = None
-        self._load(create_if_missing=True)
+        self._file_signature: tuple[int, int, str] | None = None
+        self._loaded = False
+        self._store_id = uuid.uuid4().hex
+        self._revision = 0
+        if load_on_init:
+            self._load(create_if_missing=True)
 
     @staticmethod
-    def _signature(path: Path) -> tuple[int, int] | None:
+    def _signature(path: Path) -> tuple[int, int, str] | None:
         try:
-            stat = path.stat()
+            with path.open("rb") as handle:
+                stat = os.fstat(handle.fileno())
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
         except FileNotFoundError:
             return None
-        return (stat.st_mtime_ns, stat.st_size)
+        # On WSL/Windows, ctime can be the creation time. Neither it nor mtime
+        # reliably detects same-size edits made by tools that preserve timestamps.
+        return (stat.st_mtime_ns, stat.st_size, digest.hexdigest())
 
     @classmethod
     def _default_profile(cls) -> dict[str, str]:
         return {"id": cls.DEFAULT_PROFILE_ID, "name": cls.DEFAULT_PROFILE_NAME}
+
+    @staticmethod
+    def _validate_utf8(value: str) -> None:
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise PresetValidationError("Preset data must contain valid Unicode text.") from error
 
     @classmethod
     def _validate_name(cls, name: object) -> str:
@@ -72,6 +91,7 @@ class PresetStore:
             raise PresetValidationError(
                 f"Preset name must be {cls.MAX_NAME_LENGTH} characters or fewer."
             )
+        cls._validate_utf8(name)
         return name
 
     @classmethod
@@ -82,6 +102,7 @@ class PresetStore:
             raise PresetValidationError(
                 f"Prompt must be {cls.MAX_PROMPT_LENGTH} characters or fewer."
             )
+        cls._validate_utf8(prompt)
         return prompt
 
     @classmethod
@@ -95,6 +116,7 @@ class PresetStore:
             raise PresetValidationError(
                 f"Profile name must be {cls.MAX_NAME_LENGTH} characters or fewer."
             )
+        cls._validate_utf8(name)
         return name
 
     @staticmethod
@@ -119,7 +141,10 @@ class PresetStore:
             raise PresetValidationError("Preset timestamps must be valid ISO 8601 values.") from error
         if parsed.tzinfo is None:
             raise PresetValidationError("Preset timestamps must include a timezone.")
-        return cls._format_timestamp(parsed)
+        try:
+            return cls._format_timestamp(parsed)
+        except (ValueError, OverflowError) as error:
+            raise PresetValidationError("Preset timestamps must be within the supported date range.") from error
 
     @classmethod
     def _validate_document(
@@ -128,7 +153,7 @@ class PresetStore:
         if not isinstance(document, dict):
             raise PresetValidationError("Preset JSON root must be an object.")
         version = document.get("version")
-        if version not in (1, cls.VERSION):
+        if type(version) is not int or version not in (1, cls.VERSION):
             raise PresetValidationError("Unsupported preset JSON version.")
 
         raw_profiles = document.get("profiles", []) if version == cls.VERSION else []
@@ -148,6 +173,7 @@ class PresetStore:
                 not isinstance(profile_id, str)
                 or not profile_id
                 or profile_id in profile_ids
+                or profile_id == "__all_profiles__"
             ):
                 raise PresetValidationError("Every profile must have a unique string id.")
             name = cls._validate_profile_name(raw_profile.get("name"))
@@ -155,6 +181,7 @@ class PresetStore:
             if normalized_name in profile_names:
                 raise PresetValidationError("Profile names must be unique.")
             profile_ids.add(profile_id)
+            cls._validate_utf8(profile_id)
             profile_names.add(normalized_name)
             profiles.append({"id": profile_id, "name": name})
 
@@ -163,6 +190,8 @@ class PresetStore:
             profile_ids = {cls.DEFAULT_PROFILE_ID}
         elif not profiles:
             raise PresetValidationError("At least one profile is required.")
+        if cls._default_profile() not in profiles:
+            raise PresetValidationError("The built-in Default profile must be present and named Default.")
 
         raw_presets = document.get("presets")
         if not isinstance(raw_presets, list):
@@ -172,6 +201,7 @@ class PresetStore:
 
         presets: list[dict[str, str]] = []
         seen_ids: set[str] = set()
+        migrated = version == 1
         fallback_base = datetime.now(timezone.utc)
         for index, raw in enumerate(raw_presets):
             if not isinstance(raw, dict):
@@ -180,9 +210,12 @@ class PresetStore:
             if not isinstance(preset_id, str) or not preset_id or preset_id in seen_ids:
                 raise PresetValidationError("Every preset must have a unique string id.")
             seen_ids.add(preset_id)
+            cls._validate_utf8(preset_id)
             fallback_created_at = cls._format_timestamp(
                 fallback_base + timedelta(microseconds=index)
             )
+            if raw.get("created_at") is None or raw.get("updated_at") is None:
+                migrated = True
             created_at = cls._validate_timestamp(
                 raw.get("created_at"), fallback_created_at
             )
@@ -205,16 +238,18 @@ class PresetStore:
                     "profile_id": profile_id,
                 }
             )
-        return profiles, presets, version == 1
+        return profiles, presets, migrated
 
     def _load(self, *, create_if_missing: bool = False) -> None:
         with self._lock:
-            if not self.path.exists():
+            signature = self._signature(self.path)
+            if signature is None:
                 self._profiles = [self._default_profile()]
                 self._presets = []
                 self._file_signature = None
                 if create_if_missing:
                     self._write()
+                self._loaded = True
                 return
             try:
                 with self.path.open("r", encoding="utf-8") as handle:
@@ -224,14 +259,30 @@ class PresetStore:
                 raise PresetValidationError(
                     f"Preset JSON is not valid: {error.msg} (line {error.lineno})."
                 ) from error
+            except UnicodeError as error:
+                raise PresetValidationError("Preset JSON must contain valid UTF-8 text.") from error
             if migrated:
                 self._write()
             else:
-                self._file_signature = self._signature(self.path)
+                # A file replaced during this read must be reloaded on the next call.
+                self._file_signature = signature
+                self._revision += 1
+            self._loaded = True
 
     def _reload_if_changed(self) -> None:
-        if self._signature(self.path) != self._file_signature:
+        if not self._loaded or self._signature(self.path) != self._file_signature:
             self._load(create_if_missing=True)
+
+    @contextmanager
+    def _transaction(self):
+        with self._lock:
+            self._reload_if_changed()
+            profiles, presets = deepcopy(self._profiles), deepcopy(self._presets)
+            try:
+                yield
+            except Exception:
+                self._profiles, self._presets = profiles, presets
+                raise
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -249,13 +300,17 @@ class PresetStore:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+            signature = self._signature(Path(temp_path))
             os.replace(temp_path, self.path)
         finally:
             try:
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
-        self._file_signature = self._signature(self.path)
+        # Record the file we wrote, so an external edit immediately after replace
+        # cannot be mistaken for the in-memory document.
+        self._file_signature = signature
+        self._revision += 1
 
     def list(self) -> list[dict[str, str]]:
         with self._lock:
@@ -274,6 +329,8 @@ class PresetStore:
                 "version": self.VERSION,
                 "profiles": deepcopy(self._profiles),
                 "presets": deepcopy(self._presets),
+                "store_id": self._store_id,
+                "revision": self._revision,
             }
 
     def _validated_profile_id(self, profile_id: object) -> str:
@@ -296,8 +353,7 @@ class PresetStore:
     def create(
         self, name: object, prompt: object, profile_id: object = None
     ) -> dict[str, str]:
-        with self._lock:
-            self._reload_if_changed()
+        with self._transaction():
             if len(self._presets) >= self.MAX_PRESETS:
                 raise PresetValidationError(f"At most {self.MAX_PRESETS} presets are allowed.")
             timestamp = self._timestamp()
@@ -316,13 +372,15 @@ class PresetStore:
     def update(
         self, preset_id: str, name: object, prompt: object, profile_id: object = None
     ) -> dict[str, str]:
-        with self._lock:
-            self._reload_if_changed()
+        with self._transaction():
             validated_name = self._validate_name(name)
             validated_prompt = self._validate_prompt(prompt)
-            validated_profile_id = self._validated_profile_id(profile_id)
             for preset in self._presets:
                 if preset["id"] == preset_id:
+                    validated_profile_id = (
+                        preset["profile_id"] if profile_id is None
+                        else self._validated_profile_id(profile_id)
+                    )
                     preset["name"] = validated_name
                     preset["prompt"] = validated_prompt
                     preset["profile_id"] = validated_profile_id
@@ -332,8 +390,7 @@ class PresetStore:
             raise PresetNotFoundError(preset_id)
 
     def create_profile(self, name: object) -> dict[str, str]:
-        with self._lock:
-            self._reload_if_changed()
+        with self._transaction():
             if len(self._profiles) >= self.MAX_PROFILES:
                 raise PresetValidationError(
                     f"At most {self.MAX_PROFILES} profiles are allowed."
@@ -350,8 +407,7 @@ class PresetStore:
             return deepcopy(profile)
 
     def update_profile(self, profile_id: str, name: object) -> dict[str, str]:
-        with self._lock:
-            self._reload_if_changed()
+        with self._transaction():
             if profile_id == self.DEFAULT_PROFILE_ID:
                 raise PresetValidationError("The Default profile cannot be renamed.")
             target = next(
@@ -372,14 +428,13 @@ class PresetStore:
             return deepcopy(target)
 
     def delete_profile(self, profile_id: str) -> int:
-        with self._lock:
-            self._reload_if_changed()
+        with self._transaction():
             if profile_id == self.DEFAULT_PROFILE_ID:
                 raise PresetValidationError("The Default profile cannot be deleted.")
-            if len(self._profiles) <= 1:
-                raise PresetValidationError("The last profile cannot be deleted.")
             for index, profile in enumerate(self._profiles):
                 if profile["id"] == profile_id:
+                    if len(self._profiles) <= 1:
+                        raise PresetValidationError("The last profile cannot be deleted.")
                     del self._profiles[index]
                     before = len(self._presets)
                     self._presets = [
@@ -393,8 +448,7 @@ class PresetStore:
             raise ProfileNotFoundError(profile_id)
 
     def delete(self, preset_id: str) -> None:
-        with self._lock:
-            self._reload_if_changed()
+        with self._transaction():
             for index, preset in enumerate(self._presets):
                 if preset["id"] == preset_id:
                     del self._presets[index]
@@ -407,8 +461,7 @@ class PresetStore:
             isinstance(item, str) for item in ordered_ids
         ):
             raise PresetValidationError("Order must be an array of preset ids.")
-        with self._lock:
-            self._reload_if_changed()
+        with self._transaction():
             current_ids = [preset["id"] for preset in self._presets]
             if len(set(ordered_ids)) != len(ordered_ids) or set(ordered_ids) != set(current_ids):
                 raise PresetValidationError("Order must contain every preset id exactly once.")
@@ -474,7 +527,7 @@ class PresetStore:
 
     def change_token(
         self, selected: object, separator: object | None = None
-    ) -> tuple[tuple[int, int] | None, tuple[str, ...], str]:
+    ) -> tuple[tuple[int, int, str] | None, tuple[str, ...], str]:
         selected_ids = tuple(self.parse_selection(selected))
         normalized_separator = (
             self.selection_separator(selected)
@@ -507,4 +560,6 @@ def resolve_preset_file() -> Path:
 
 
 PRESET_FILE = resolve_preset_file()
-PRESET_STORE = PresetStore(PRESET_FILE)
+# Broken or unwritable storage should report an error when used, not hide the node
+# by preventing ComfyUI from importing the extension.
+PRESET_STORE = PresetStore(PRESET_FILE, load_on_init=False)

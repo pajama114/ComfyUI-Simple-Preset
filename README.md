@@ -46,8 +46,9 @@ chips at the bottom of the node. The separator can be set to comma (`, `), newli
 or comma plus newline in **Settings > Simple Preset > 出力**. This preference is
 applied at execution time and is not stored in workflow JSON. Drag a rounded
 preset-name chip to change the order for that workflow only. The sort menu
-continues to change the shared preset-list order without changing a workflow's
-applied order.
+changes the shared list order within the displayed profile without changing a
+workflow's applied order or other profiles' ordering. Choose all profiles to sort
+the entire shared list.
 
 ## Development checks
 
@@ -55,3 +56,6 @@ applied order.
 python -m unittest discover -s tests -v
 npm test
 ```
+
+HTTP integration tests run when `aiohttp` is available, as in ComfyUI's Python
+environment. They are skipped when running with standalone Python without it.

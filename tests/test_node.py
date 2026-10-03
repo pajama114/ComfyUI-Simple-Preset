@@ -1,6 +1,8 @@
 import json
 import importlib.util
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -22,6 +24,32 @@ nodes = sys.modules[f"{PACKAGE_NAME}.nodes"]
 
 
 class SimplePresetNodeTests(unittest.TestCase):
+    def test_node_import_survives_corrupt_shared_storage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Path(directory) / "simple_preset" / "presets.json"
+            storage.parent.mkdir()
+            storage.write_text("{broken", encoding="utf-8")
+            script = """
+import importlib.util, sys, types
+from pathlib import Path
+folder_paths = types.ModuleType('folder_paths')
+folder_paths.get_user_directory = lambda: sys.argv[1]
+sys.modules['folder_paths'] = folder_paths
+root = Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location('isolated_preset', root / '__init__.py', submodule_search_locations=[str(root)])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+assert module.NODE_CLASS_MAPPINGS['SimplePreset'].RETURN_TYPES == ('STRING',)
+assert module.WEB_DIRECTORY == './web'
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", script, directory, str(PACKAGE_ROOT)],
+                text=True, capture_output=True, timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(storage.read_text(encoding="utf-8"), "{broken")
+
     def test_node_registration_and_output_contract(self):
         self.assertIs(nodes.NODE_CLASS_MAPPINGS["SimplePreset"], nodes.SimplePreset)
         self.assertEqual(nodes.SimplePreset.RETURN_TYPES, ("STRING",))
@@ -34,6 +62,24 @@ class SimplePresetNodeTests(unittest.TestCase):
         self.assertEqual(result, ("a\nb",))
         join.assert_called_once_with(selected)
         self.assertEqual(list(nodes.SimplePreset.INPUT_TYPES()["required"]), ["selected_presets"])
+
+    def test_real_node_execution_and_cache_invalidation_share_presets_between_workflows(self):
+        store_class = sys.modules[f"{PACKAGE_NAME}.preset_store"].PresetStore
+        with tempfile.TemporaryDirectory() as directory:
+            store = store_class(Path(directory) / "presets.json")
+            first = store.create("First", "one")
+            second = store.create("Second", "two")
+            workflow_one = json.dumps({"ids": [first["id"], second["id"]], "separator": "newline"})
+            workflow_two = json.dumps([second["id"], first["id"]])
+            with patch.object(nodes, "PRESET_STORE", store):
+                node = nodes.SimplePreset()
+                self.assertEqual(node.build_prompt(workflow_one), ("one\ntwo",))
+                self.assertEqual(node.build_prompt(workflow_two), ("two, one",))
+                before = node.IS_CHANGED(workflow_one)
+                store.update(first["id"], "First", "updated")
+                self.assertNotEqual(node.IS_CHANGED(workflow_one), before)
+                self.assertEqual(node.build_prompt(workflow_one), ("updated\ntwo",))
+                self.assertEqual(node.build_prompt(workflow_two), ("two, updated",))
 
     def test_change_token_receives_execution_selection(self):
         selected = '{"ids":["first"],"separator":"comma_newline"}'

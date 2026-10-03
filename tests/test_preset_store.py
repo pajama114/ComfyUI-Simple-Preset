@@ -78,6 +78,7 @@ class PresetStoreTests(unittest.TestCase):
         self.assertLess(presets[0]["created_at"], presets[1]["created_at"])
         self.assertEqual(presets[0]["updated_at"], presets[0]["created_at"])
         self.assertEqual(presets[0]["profile_id"], PresetStore.DEFAULT_PROFILE_ID)
+        self.assertEqual(PresetStore(self.path).list(), presets)
 
     def test_version_one_json_is_migrated_without_losing_presets(self):
         document = {
@@ -249,6 +250,159 @@ class PresetStoreTests(unittest.TestCase):
             resolved = resolve_preset_file()
 
         self.assertEqual(resolved, user_directory / "simple_preset" / "presets.json")
+
+    def test_content_update_keeps_the_existing_profile_when_not_specified(self):
+        profile = self.store.create_profile("Photo")
+        preset = self.store.create("Portrait", "before", profile["id"])
+        updated = self.store.update(preset["id"], "Portrait", "after")
+        self.assertEqual(updated["profile_id"], profile["id"])
+        self.assertEqual(PresetStore(self.path).list(), [updated])
+
+    def test_failed_writes_leave_memory_and_disk_unchanged(self):
+        profile = self.store.create_profile("Photo")
+        first = self.store.create("First", "one", profile["id"])
+        second = self.store.create("Second", "two")
+        operations = {
+            "create": lambda: self.store.create("Failed", "unsaved"),
+            "update": lambda: self.store.update(first["id"], "Changed", "unsaved"),
+            "delete": lambda: self.store.delete(first["id"]),
+            "reorder": lambda: self.store.reorder([second["id"], first["id"]]),
+            "create_profile": lambda: self.store.create_profile("Unsaved"),
+            "update_profile": lambda: self.store.update_profile(profile["id"], "Changed"),
+            "delete_profile": lambda: self.store.delete_profile(profile["id"]),
+        }
+        for name, operation in operations.items():
+            with self.subTest(operation=name):
+                store = PresetStore(self.path)
+                self.store = store
+                before = store.snapshot()
+                disk_before = self.path.read_bytes()
+                with patch("preset_store.os.replace", side_effect=OSError("Disk error")):
+                    with self.assertRaises(OSError):
+                        operation()
+                self.assertEqual(store.snapshot(), before)
+                self.assertEqual(self.path.read_bytes(), disk_before)
+                self.assertEqual(list(self.path.parent.glob("*.tmp")), [])
+                store.create("Successful", "saved")
+                self.assertEqual(PresetStore(self.path).list(), store.list())
+                # Keep each failure independent of earlier successful writes.
+                self.path.write_bytes(disk_before)
+
+    def test_same_size_external_edits_with_preserved_mtime_are_reloaded(self):
+        import os
+
+        preset = self.store.create("Name", "old")
+        before = self.path.stat()
+        token = self.store.change_token([preset["id"]])
+        text = self.path.read_text(encoding="utf-8").replace('"old"', '"new"')
+        self.path.write_text(text, encoding="utf-8")
+        os.utime(self.path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(self.store.join_selected([preset["id"]]), "new")
+        self.assertNotEqual(self.store.change_token([preset["id"]]), token)
+
+    def test_external_edit_immediately_after_atomic_replace_is_not_missed(self):
+        import os
+
+        replace = os.replace
+
+        def replace_then_edit(source, destination):
+            replace(source, destination)
+            document = json.loads(self.path.read_text(encoding="utf-8"))
+            document["presets"][0]["prompt"] = "external"
+            self.path.write_text(json.dumps(document), encoding="utf-8")
+
+        with patch("preset_store.os.replace", side_effect=replace_then_edit):
+            preset = self.store.create("Name", "original")
+        self.assertEqual(self.store.join_selected([preset["id"]]), "external")
+
+    def test_snapshot_revisions_increase_for_writes_and_external_reload(self):
+        before = self.store.snapshot()
+        self.store.create("A", "one")
+        after = self.store.snapshot()
+        self.assertEqual(before["store_id"], after["store_id"])
+        self.assertGreater(after["revision"], before["revision"])
+        document = json.loads(self.path.read_text(encoding="utf-8"))
+        document["presets"][0]["prompt"] = "external"
+        self.path.write_text(json.dumps(document), encoding="utf-8")
+        self.assertGreater(self.store.snapshot()["revision"], after["revision"])
+        self.assertNotIn("revision", json.loads(self.path.read_text(encoding="utf-8")))
+
+    def test_selection_handles_empty_deleted_duplicate_and_invalid_ids(self):
+        first = self.store.create("Unicode 🐱", "猫、é\nline")
+        empty = self.store.create("Empty", "")
+        second = self.store.create("Second", "two")
+        selection = [first["id"], "deleted", first["id"], None, 42, empty["id"], second["id"]]
+        self.assertEqual(self.store.join_selected(selection), "猫、é\nline, two")
+        self.assertEqual(self.store.join_selected({"ids": selection, "separator": "newline"}), "猫、é\nline\ntwo")
+        for invalid in (None, 42, True, {}, '{"ids":null}', "null", '"text"'):
+            with self.subTest(selection=invalid):
+                self.assertEqual(self.store.join_selected(invalid), "")
+        self.assertEqual(PresetStore(self.path).list()[0], first)
+
+    def test_size_limits_are_enforced_without_changing_the_document(self):
+        for name, prompt in (("x" * 121, "ok"), ("ok", "x" * 100_001)):
+            with self.subTest(name_length=len(name), prompt_length=len(prompt)):
+                before = self.store.snapshot()
+                with self.assertRaises(PresetValidationError):
+                    self.store.create(name, prompt)
+                self.assertEqual(self.store.snapshot(), before)
+        with patch.object(PresetStore, "MAX_PRESETS", 1):
+            self.store.create("Allowed", "one")
+            with self.assertRaises(PresetValidationError):
+                self.store.create("Too many", "two")
+        with patch.object(PresetStore, "MAX_PROFILES", 1):
+            with self.assertRaises(PresetValidationError):
+                self.store.create_profile("Too many")
+
+    def test_concurrent_writes_do_not_lose_presets(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            presets = list(executor.map(lambda i: self.store.create(f"Preset {i}", str(i)), range(20)))
+        self.assertEqual({item["id"] for item in self.store.list()}, {item["id"] for item in presets})
+        self.assertEqual(PresetStore(self.path).list(), self.store.list())
+
+    def test_corrupt_file_can_be_repaired_without_recreating_the_store(self):
+        original = self.path.read_bytes()
+        self.path.write_bytes(b"{broken")
+        for _ in range(2):
+            with self.assertRaises(PresetValidationError):
+                self.store.list()
+        self.assertEqual(self.path.read_bytes(), b"{broken")
+        self.path.write_bytes(original)
+        self.assertEqual(self.store.list(), [])
+
+    def test_document_validation_rejects_invalid_versions_and_references(self):
+        valid = json.loads(self.path.read_text(encoding="utf-8"))
+        for version in (None, True, 1.0, 2, "3", 4):
+            with self.subTest(version=version):
+                invalid = dict(valid, version=version)
+                with self.assertRaises(PresetValidationError):
+                    PresetStore._validate_document(invalid)
+        for invalid in (
+            [], dict(valid, profiles=[]), dict(valid, profiles="wrong"),
+            dict(valid, profiles=[self.default_profile, self.default_profile]),
+            dict(valid, profiles=[{"id": "photo", "name": "Photo"}]),
+            dict(valid, profiles=[dict(self.default_profile, name="Renamed")]),
+            dict(valid, profiles=[self.default_profile, {"id": "__all_profiles__", "name": "Reserved"}]),
+            dict(valid, presets=[{"id": "a", "name": "A", "prompt": "x", "profile_id": "missing"}]),
+        ):
+            with self.subTest(document=invalid):
+                with self.assertRaises(PresetValidationError):
+                    PresetStore._validate_document(invalid)
+
+    def test_unpaired_surrogates_and_out_of_range_timestamps_are_validation_errors(self):
+        for operation in (
+            lambda: self.store.create("\ud800", "prompt"),
+            lambda: self.store.create("Name", "\ud800"),
+            lambda: self.store.create_profile("\ud800"),
+            lambda: PresetStore._validate_timestamp("0001-01-01T00:00:00+01:00", ""),
+            lambda: PresetStore._validate_timestamp("9999-12-31T23:59:59-01:00", ""),
+        ):
+            with self.subTest(operation=operation):
+                with self.assertRaises(PresetValidationError):
+                    operation()
+        self.assertEqual(self.store.list(), [])
 
 if __name__ == "__main__":
     unittest.main()
