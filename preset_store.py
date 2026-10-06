@@ -519,10 +519,17 @@ class PresetStore:
         with self._lock:
             self._reload_if_changed()
             by_id = {preset["id"]: preset for preset in self._presets}
+            missing_ids = [preset_id for preset_id in selected_ids if preset_id not in by_id]
+            if missing_ids:
+                raise PresetValidationError(
+                    f"Selected presets are missing: {', '.join(missing_ids)}. "
+                    "Restore them in the shared preset file or remove their missing "
+                    "selections from this node before running."
+                )
             return delimiter.join(
                 by_id[preset_id]["prompt"]
                 for preset_id in selected_ids
-                if preset_id in by_id and by_id[preset_id]["prompt"]
+                if by_id[preset_id]["prompt"]
             )
 
     def change_token(

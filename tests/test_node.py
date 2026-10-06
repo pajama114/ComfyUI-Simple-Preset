@@ -89,6 +89,17 @@ assert module.WEB_DIRECTORY == './web'
         self.assertEqual(result, "token")
         token.assert_called_once_with(selected)
 
+    def test_node_rejects_missing_presets_instead_of_outputting_a_partial_prompt(self):
+        store_module = sys.modules[f"{PACKAGE_NAME}.preset_store"]
+        with tempfile.TemporaryDirectory() as directory:
+            store = store_module.PresetStore(Path(directory) / "presets.json")
+            preset = store.create("Available", "one")
+            selection = json.dumps({"ids": [preset["id"], "missing"], "separator": "newline"})
+            with patch.object(nodes, "PRESET_STORE", store):
+                with self.assertRaisesRegex(store_module.PresetValidationError, "missing"):
+                    nodes.SimplePreset().build_prompt(selection)
+                self.assertEqual(nodes.SimplePreset().build_prompt("[]"), ("",))
+
     def test_http_routes_register_with_comfy_server_contract(self):
         registered = []
 

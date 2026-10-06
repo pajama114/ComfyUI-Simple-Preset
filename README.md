@@ -35,9 +35,17 @@ A workflow stores only a JSON array of selected preset IDs in the node widget an
 the last displayed profile ID in the node properties. Names, prompt text, and
 profile names remain exclusively in the shared preset file.
 
+If a selected preset is deleted or unavailable, its ID and position are kept in
+the workflow. The node shows a warning and a `Missing` chip, and execution fails
+with a clear error instead of producing an incomplete prompt. Restore the preset
+with the same ID and reload to recover the selection automatically, or click the missing
+chip's × to remove that selection from this node. Creating a new preset with the
+same name does not restore it because new presets receive new IDs.
+
 Changing profiles filters the visible list without clearing selections in other
 profiles. Select-all follows the current search results, while clear-selection
-only clears presets belonging to the current profile. Deleting a profile also
+only clears presets belonging to the current profile. With all profiles displayed,
+clear-selection also removes missing selections. Deleting a profile also
 deletes all presets assigned to it after confirmation.
 The built-in `Default` profile is selected initially and cannot be renamed or
 deleted, and every preset belongs to a profile. New presets are assigned to the

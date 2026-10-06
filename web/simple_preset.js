@@ -252,6 +252,16 @@ function installStyles() {
             outline: none; border-color: var(--sp-accent);
             background: color-mix(in srgb, var(--sp-accent) 12%, var(--sp-row-bg));
         }
+        .sp-preset-chip.sp-missing, .sp-missing-notice { color: #ff8d8d; }
+        :root:not(.dark-theme) .sp-preset-chip.sp-missing,
+        :root:not(.dark-theme) .sp-missing-notice { color: #c43f47; }
+        .sp-preset-chip.sp-missing { border-color: currentColor; border-style: dashed; }
+        .sp-missing-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .sp-missing-chip-remove { flex: none; margin-left: 6px; cursor: pointer; }
+        .sp-missing-notice {
+            flex: none; padding: 5px 7px; border: 1px solid currentColor; border-radius: 6px;
+            font-size: 11px;
+        }
         .sp-preset-chip:active { cursor: grabbing; }
         .sp-preset-chip.sp-dragging {
             opacity: .38; border-style: dashed; cursor: grabbing;
@@ -553,6 +563,7 @@ function createPresetWidget(node, inputName, inputData) {
     }, { capture: true });
     let profiles = [];
     let presets = [];
+    let hasSnapshot = false;
     let selectedIds = parseSelection(inputData?.[1]?.default ?? "[]");
     let currentProfileId = storedProfileId(node);
     let presetFormProfileId = DEFAULT_PROFILE_ID;
@@ -725,7 +736,10 @@ function createPresetWidget(node, inputName, inputData) {
     summaryChips.setAttribute("aria-label", "Selected presets (drag to reorder)");
     summary.append(summaryLabel, summaryChips);
     const selectionNotice = element("div", "sp-selection-notice sp-hidden");
-    root.append(profileSection, header, toolbar, form, list, selectionNotice, summary);
+    const missingNotice = element("div", "sp-missing-notice sp-hidden");
+    missingNotice.setAttribute("role", "status");
+    missingNotice.setAttribute("aria-live", "polite");
+    root.append(profileSection, header, toolbar, form, list, selectionNotice, missingNotice, summary);
     const scrollRegion = { root, list, node };
     scrollRegions.add(scrollRegion);
 
@@ -1033,10 +1047,13 @@ function createPresetWidget(node, inputName, inputData) {
         presetProfileField.classList.toggle("sp-hidden", !editingId);
         profileForm.classList.toggle("sp-hidden", !profileFormVisible);
         const selected = selectedSet();
+        const presetsById = new Map(presets.map((preset) => [preset.id, preset]));
+        const missingIds = hasSnapshot ? selectedIds.filter((id) => !presetsById.has(id)) : [];
         const scoped = profilePresets();
         const visible = visiblePresets();
         const selectedInProfile = scoped.filter((preset) => selected.has(preset.id)).length;
-        const selectedOutsideProfile = selected.size - selectedInProfile;
+        const selectedOutsideProfile = presets.filter((preset) => selected.has(preset.id)).length
+            - selectedInProfile;
         const currentProfile = profiles.find((profile) => profile.id === currentProfileId);
         const canEditCurrentProfile = Boolean(currentProfile)
             && currentProfile.id !== DEFAULT_PROFILE_ID;
@@ -1076,7 +1093,8 @@ function createPresetWidget(node, inputName, inputData) {
         promptInput.disabled = loading;
         profileNameInput.disabled = loading;
         cancelProfileButton.disabled = loading;
-        clearButton.disabled = loading || selectedInProfile === 0;
+        clearButton.disabled = loading || (currentProfileId === ALL_PROFILES
+            ? selected.size === 0 : selectedInProfile === 0);
         selectAllButton.disabled = loading || visible.length === 0
             || visible.every((preset) => selected.has(preset.id));
         sortButton.disabled = loading || scoped.length < 2;
@@ -1103,6 +1121,11 @@ function createPresetWidget(node, inputName, inputData) {
             currentProfileId === ALL_PROFILES || selectedOutsideProfile === 0,
         );
         selectionNotice.textContent = `Selected in other profiles: ${selectedOutsideProfile}`;
+        missingNotice.classList.toggle("sp-hidden", missingIds.length === 0);
+        missingNotice.textContent = missingIds.length
+            ? `Execution blocked: ${missingIds.length} selected preset${missingIds.length === 1 ? " is" : "s are"} missing. `
+                + "Restore them or click \u00d7 on their chips to remove the selections."
+            : "";
 
         list.replaceChildren();
         if (!presets.length) {
@@ -1150,29 +1173,42 @@ function createPresetWidget(node, inputName, inputData) {
             }
         }
 
-        const presetsById = new Map(presets.map((preset) => [preset.id, preset]));
         summaryChips.replaceChildren();
         if (!selectedIds.length) {
             summaryChips.append(element("span", "sp-summary-empty", "(None selected)"));
         } else {
             for (const [index, presetId] of selectedIds.entries()) {
                 const preset = presetsById.get(presetId);
-                if (!preset) continue;
-                const chip = element("button", "sp-preset-chip", preset.name);
+                const missing = hasSnapshot && !preset;
+                const label = preset?.name ?? `${missing ? "Missing" : "Unresolved"}: ${presetId.slice(0, 8)}`;
+                const chip = element("button", `sp-preset-chip${missing ? " sp-missing" : ""}`);
+                if (missing) {
+                    chip.append(
+                        element("span", "sp-missing-chip-label", label),
+                        element("span", "sp-missing-chip-remove", "\u00d7"),
+                    );
+                    chip.addEventListener("click", () => {
+                        setSelection(selectedIds.filter((id) => id !== presetId));
+                    });
+                } else {
+                    chip.textContent = label;
+                }
                 chip.type = "button";
                 chip.draggable = true;
-                chip.dataset.presetId = preset.id;
-                chip.title = `${preset.name}\nDrag to reorder selected presets`;
+                chip.dataset.presetId = presetId;
+                chip.title = missing
+                    ? `Missing preset: ${presetId}\nClick to remove this selection; drag to reorder`
+                    : `${preset?.name ?? presetId}\nDrag to reorder selected presets`;
                 chip.setAttribute("role", "option");
                 chip.setAttribute("aria-selected", "true");
                 chip.setAttribute(
                     "aria-label",
-                    `${preset.name}, position ${index + 1} of ${selectedIds.length}`,
+                    `${missing ? `Remove missing preset ${presetId}` : label}, position ${index + 1} of ${selectedIds.length}`,
                 );
                 chip.addEventListener("dragstart", (event) => {
                     event.stopPropagation();
                     event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", preset.id);
+                    event.dataTransfer.setData("text/plain", presetId);
                     chip.classList.add("sp-dragging");
                     summary.classList.add("sp-drag-active");
                 });
@@ -1187,12 +1223,12 @@ function createPresetWidget(node, inputName, inputData) {
                     event.preventDefault();
                     event.stopPropagation();
                     const offset = event.key === "ArrowLeft" ? -1 : 1;
-                    const nextIds = moveSelection(selectedIds, preset.id, offset);
+                    const nextIds = moveSelection(selectedIds, presetId, offset);
                     if (nextIds.every((id, itemIndex) => id === selectedIds[itemIndex])) return;
                     setSelection(nextIds);
                     requestAnimationFrame(() => {
                         [...summaryChips.querySelectorAll(".sp-preset-chip")]
-                            .find((item) => item.dataset.presetId === preset.id)
+                            .find((item) => item.dataset.presetId === presetId)
                             ?.focus();
                     });
                 });
@@ -1229,27 +1265,19 @@ function createPresetWidget(node, inputName, inputData) {
             }
             const nextProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
             const nextPresets = payload.presets;
-            const dataChanged = !samePresetData(
+            const dataChanged = !hasSnapshot || !samePresetData(
                 profiles,
                 presets,
                 nextProfiles,
                 nextPresets,
             );
-            const available = new Set(nextPresets.map((preset) => preset.id));
-            const retained = selectedIds.filter((id) => available.has(id));
-            const selectionChanged = retained.length !== selectedIds.length;
-            if (!dataChanged && !selectionChanged) return;
+            if (!dataChanged) return;
 
-            if (dataChanged) {
-                profiles = nextProfiles;
-                presets = nextPresets;
-                syncToken += 1;
-            }
-            if (selectionChanged) {
-                selectedIds = retained;
-                markChanged();
-            }
-            if (dataChanged) rebuildProfileOptions();
+            hasSnapshot = true;
+            profiles = nextProfiles;
+            presets = nextPresets;
+            syncToken += 1;
+            rebuildProfileOptions();
             render();
         },
         async refresh({ quiet = false } = {}) {
@@ -1347,6 +1375,10 @@ function createPresetWidget(node, inputName, inputData) {
         setSelection([...next]);
     });
     clearButton.addEventListener("click", () => {
+        if (currentProfileId === ALL_PROFILES) {
+            setSelection([]);
+            return;
+        }
         const scopedIds = new Set(profilePresets().map((preset) => preset.id));
         setSelection(selectedIds.filter((id) => !scopedIds.has(id)));
     });
@@ -1358,8 +1390,6 @@ function createPresetWidget(node, inputName, inputData) {
             selectedIds = parseSelection(value);
             currentProfileId = storedProfileId(node);
             if (profiles.length) {
-                const available = new Set(presets.map((preset) => preset.id));
-                selectedIds = selectedIds.filter((id) => available.has(id));
                 rebuildProfileOptions();
             }
             render();

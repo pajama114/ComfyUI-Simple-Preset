@@ -150,7 +150,11 @@ class PresetStoreTests(unittest.TestCase):
         self.assertEqual(self.store.delete_profile(anime["id"]), 2)
         self.assertEqual(self.store.list_profiles(), [self.default_profile, photo])
         self.assertEqual(self.store.list(), [retained])
-        self.assertEqual(self.store.join_selected(selected), "gamma")
+        with self.assertRaises(PresetValidationError) as raised:
+            self.store.join_selected(selected)
+        self.assertIn(deleted_one["id"], str(raised.exception))
+        self.assertIn(deleted_two["id"], str(raised.exception))
+        self.assertEqual(self.store.join_selected([retained["id"]]), "gamma")
         with self.assertRaises(ProfileNotFoundError):
             self.store.delete_profile(anime["id"])
 
@@ -327,17 +331,44 @@ class PresetStoreTests(unittest.TestCase):
         self.assertGreater(self.store.snapshot()["revision"], after["revision"])
         self.assertNotIn("revision", json.loads(self.path.read_text(encoding="utf-8")))
 
-    def test_selection_handles_empty_deleted_duplicate_and_invalid_ids(self):
+    def test_selection_handles_empty_duplicate_and_invalid_ids(self):
         first = self.store.create("Unicode 🐱", "猫、é\nline")
         empty = self.store.create("Empty", "")
         second = self.store.create("Second", "two")
-        selection = [first["id"], "deleted", first["id"], None, 42, empty["id"], second["id"]]
+        selection = [first["id"], first["id"], None, 42, empty["id"], second["id"]]
         self.assertEqual(self.store.join_selected(selection), "猫、é\nline, two")
         self.assertEqual(self.store.join_selected({"ids": selection, "separator": "newline"}), "猫、é\nline\ntwo")
         for invalid in (None, 42, True, {}, '{"ids":null}', "null", '"text"'):
             with self.subTest(selection=invalid):
                 self.assertEqual(self.store.join_selected(invalid), "")
         self.assertEqual(PresetStore(self.path).list()[0], first)
+
+    def test_missing_selection_blocks_execution_until_shared_json_is_restored(self):
+        first = self.store.create("First", "one")
+        second = self.store.create("Second", "two")
+        backup = self.path.read_text(encoding="utf-8")
+        workflow_one = json.dumps([second["id"], first["id"]])
+        workflow_two = json.dumps([first["id"]])
+        before = self.store.change_token(workflow_one)
+        self.store.delete(second["id"])
+        self.assertNotEqual(self.store.change_token(workflow_one), before)
+        for selection in (workflow_one, {"ids": [second["id"]], "separator": "newline"}):
+            with self.subTest(selection=selection):
+                with self.assertRaises(PresetValidationError) as raised:
+                    self.store.join_selected(selection)
+                self.assertIn(second["id"], str(raised.exception))
+                self.assertIn("Restore", str(raised.exception))
+        self.assertEqual(self.store.join_selected(workflow_two), "one")
+        recreated = self.store.create("Second", "replacement")
+        self.assertNotEqual(recreated["id"], second["id"])
+        with self.assertRaises(PresetValidationError):
+            self.store.join_selected(workflow_one)
+
+        missing_token = self.store.change_token(workflow_one)
+        self.path.write_text(backup, encoding="utf-8")
+        self.assertNotEqual(self.store.change_token(workflow_one), missing_token)
+        self.assertEqual(self.store.join_selected(workflow_one), "two, one")
+        self.assertEqual(PresetStore(self.path).join_selected(workflow_two), "one")
 
     def test_size_limits_are_enforced_without_changing_the_document(self):
         for name, prompt in (("x" * 121, "ok"), ("ok", "x" * 100_001)):

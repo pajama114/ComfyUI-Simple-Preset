@@ -42,12 +42,121 @@ test("selection accepts execution-format values when a workflow is restored", as
     assert.deepEqual(node.selection(), ["a"]);
 });
 
-test("restoring a workflow after presets were loaded drops deleted ids immediately", async () => {
+test("restoring a workflow after presets were loaded retains missing ids and their positions", async () => {
     const harness = frontendHarness(payload([preset("a", "A")]));
     const node = harness.createNode();
     await flush();
     node.widget.value = '["deleted","a"]';
-    assert.deepEqual(node.selection(), ["a"]);
+    assert.deepEqual(node.selection(), ["deleted", "a"]);
+    assert.deepEqual(
+        node.root.querySelectorAll(".sp-preset-chip").map((chip) => chip.dataset.presetId),
+        ["deleted", "a"],
+    );
+    assert.equal(node.root.querySelector(".sp-missing-notice").classList.contains("sp-hidden"), false);
+    assert.match(node.root.querySelector(".sp-missing-notice").textContent, /Execution blocked/);
+    assert.match(node.root.querySelector(".sp-missing").title, /deleted/);
+    assert.equal(node.root.querySelector(".sp-selection-notice").classList.contains("sp-hidden"), true);
+    assert.deepEqual(JSON.parse(node.widget.serializeValue()).ids, ["deleted", "a"]);
+});
+
+test("missing selections are only marked after the initial shared snapshot arrives", async () => {
+    const harness = frontendHarness(payload([]));
+    const pending = deferred();
+    harness.setFetch(() => pending.promise);
+    const node = harness.createNode();
+    node.widget.value = '["a","missing"]';
+    assert.equal(node.root.querySelector(".sp-missing"), null);
+    assert.equal(node.root.querySelector(".sp-missing-notice").classList.contains("sp-hidden"), true);
+    pending.resolve(response(payload([preset("a", "A")])));
+    await flush();
+    assert.deepEqual(node.selection(), ["a", "missing"]);
+    assert.equal(node.root.querySelectorAll(".sp-missing").length, 1);
+});
+
+test("deleting and restoring shared presets recovers independent workflow selections in place", async () => {
+    const initial = [preset("a", "A"), preset("b", "B"), preset("c", "C", "photo")];
+    const harness = frontendHarness(payload(initial));
+    const first = harness.createNode();
+    const second = harness.createNode({ simple_preset_profile_id: "photo" });
+    await flush();
+    first.widget.value = '["a","b","c"]';
+    second.widget.value = '["b","a"]';
+    harness.push(payload([initial[0], initial[2]], 2));
+    assert.deepEqual(first.selection(), ["a", "b", "c"]);
+    assert.deepEqual(second.selection(), ["b", "a"]);
+    assert.equal(first.root.querySelector(".sp-selection-notice").textContent, "Selected in other profiles: 1");
+    harness.setFetch(async () => response(payload([initial[0], initial[2]], 2)));
+    const restored = harness.createNode();
+    restored.widget.value = first.widget.value;
+    await flush();
+    assert.deepEqual(restored.selection(), ["a", "b", "c"]);
+    assert.equal(restored.root.querySelector(".sp-missing").dataset.presetId, "b");
+    harness.push(payload(initial, 3));
+    for (const node of [first, second, restored]) {
+        assert.equal(node.root.querySelector(".sp-missing"), null);
+        assert.equal(node.root.querySelector(".sp-missing-notice").classList.contains("sp-hidden"), true);
+    }
+    assert.deepEqual(first.selection(), ["a", "b", "c"]);
+    assert.deepEqual(second.selection(), ["b", "a"]);
+    assert.deepEqual(
+        first.root.querySelectorAll(".sp-preset-chip").map((chip) => chip.textContent),
+        ["A", "B", "C"],
+    );
+});
+
+test("a missing chip can be removed explicitly without changing other workflow selections", async () => {
+    const harness = frontendHarness(payload([preset("a", "A")]));
+    const first = harness.createNode();
+    const second = harness.createNode();
+    await flush();
+    first.widget.value = '["a","missing","another-missing"]';
+    second.widget.value = first.widget.value;
+    assert.match(first.root.querySelector(".sp-missing-notice").textContent, /2 selected presets are missing/);
+    first.root.querySelector(".sp-missing").click();
+    assert.deepEqual(first.selection(), ["a", "another-missing"]);
+    assert.deepEqual(second.selection(), ["a", "missing", "another-missing"]);
+    first.root.querySelector(".sp-missing").click();
+    assert.deepEqual(first.selection(), ["a"]);
+    assert.equal(first.root.querySelector(".sp-missing-notice").classList.contains("sp-hidden"), true);
+    assert.equal(harness.calls.filter((call) => call.options.method === "DELETE").length, 0);
+});
+
+test("missing selections survive profile clearing and can be cleared with all profiles displayed", async () => {
+    const harness = frontendHarness(payload([preset("a", "A"), preset("b", "B", "photo")]));
+    const node = harness.createNode();
+    await flush();
+    node.widget.value = '["a","missing","b"]';
+    node.button("Clear selection in current profile").click();
+    assert.deepEqual(node.selection(), ["missing", "b"]);
+    node.root.querySelector(".sp-profile-option").click();
+    node.button("Clear selection in current profile").click();
+    assert.deepEqual(node.selection(), []);
+    assert.equal(node.root.querySelector(".sp-missing-notice").classList.contains("sp-hidden"), true);
+    node.widget.value = '["missing"]';
+    assert.equal(node.button("Clear selection in current profile").disabled, false);
+    node.button("Clear selection in current profile").click();
+    assert.deepEqual(node.selection(), []);
+});
+
+test("missing chips participate in drag and keyboard ordering without losing ids", async () => {
+    const harness = frontendHarness(payload([preset("a", "A"), preset("b", "B")]));
+    const node = harness.createNode();
+    await flush();
+    node.widget.value = '["a","missing","b"]';
+    const summary = node.root.querySelector(".sp-summary");
+    const dataTransfer = { setData() {} };
+    const missing = node.root.querySelector(".sp-missing");
+    missing.fire("dragstart", { dataTransfer });
+    summary.fire("dragover", { dataTransfer, clientX: 400, clientY: 400 });
+    summary.fire("drop", { dataTransfer });
+    assert.deepEqual(node.selection(), ["a", "b", "missing"]);
+    node.root.querySelector(".sp-missing").fire("keydown", { key: "ArrowLeft", altKey: true });
+    assert.deepEqual(node.selection(), ["a", "missing", "b"]);
+    harness.push(payload([preset("a", "A"), preset("missing", "Restored"), preset("b", "B")], 2));
+    assert.deepEqual(
+        node.root.querySelectorAll(".sp-preset-chip").map((chip) => chip.textContent),
+        ["A", "Restored", "B"],
+    );
 });
 
 test("removed nodes stop receiving refreshes and retain the widget cleanup hook", async () => {
