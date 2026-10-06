@@ -177,16 +177,37 @@ class PresetStoreTests(unittest.TestCase):
 
         self.assertEqual(self.store.join_selected(selected, "comma"), "one, two")
         self.assertEqual(self.store.join_selected(selected, "newline"), "one\ntwo")
+        self.assertEqual(self.store.join_selected(selected, "period"), "one. two")
         self.assertEqual(
             self.store.join_selected(selected, "comma_newline"),
-            "one,\ntwo",
+            "one, \ntwo",
         )
         self.assertEqual(self.store.join_selected(selected, "invalid"), "one, two")
 
         execution_selection = json.dumps(
             {"ids": selected, "separator": "comma_newline"}
         )
-        self.assertEqual(self.store.join_selected(execution_selection), "one,\ntwo")
+        self.assertEqual(self.store.join_selected(execution_selection), "one, \ntwo")
+
+    def test_period_separator_handles_sentence_endings_and_join_boundaries(self):
+        cases = [
+            (["a quiet room", "soft sunlight enters"], "a quiet room. soft sunlight enters"),
+            (["First.", "Second!", "Third?", "Last"], "First. Second! Third? Last"),
+            (["First. \n", " \tSecond"], "First. Second"),
+            (["First \n", " Second"], "First. Second"),
+            (["First", "", " \t\n", "Last"], "First. Last"),
+            (["Single fragment"], "Single fragment"),
+            ([" \t\n"], ""),
+            ([], ""),
+        ]
+        for prompts, expected in cases:
+            with self.subTest(prompts=prompts):
+                selection = [self.store.create(f"Fragment {index}", prompt)["id"]
+                             for index, prompt in enumerate(prompts)]
+                self.assertEqual(
+                    self.store.join_selected(json.dumps({"ids": selection, "separator": "period"})),
+                    expected,
+                )
 
     def test_change_token_includes_the_output_separator(self):
         preset = self.store.create("First", "one")

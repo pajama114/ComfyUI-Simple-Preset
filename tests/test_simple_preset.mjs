@@ -18,20 +18,27 @@ test("profile labels target their own control before ComfyUI assigns node ids", 
     assert.equal(second.root.querySelector(".sp-profile-label").htmlFor, secondButton.id);
 });
 
-test("workflow selections round-trip independently and execution alone includes the separator", async () => {
+test("workflow selections and separators round-trip independently without storing shared content", async () => {
     const harness = frontendHarness(payload([preset("a", "A"), preset("b", "B")]));
     const first = harness.createNode();
     const second = harness.createNode();
-    first.widget.value = '["b","a"]';
-    second.widget.value = '["a"]';
+    first.widget.value = '{"ids":["b","a"],"separator":"period"}';
+    second.widget.value = '{"ids":["a"],"separator":"comma"}';
     await flush();
     assert.deepEqual(first.selection(), ["b", "a"]);
     assert.deepEqual(second.selection(), ["a"]);
-    assert.deepEqual(JSON.parse(first.widget.serializeValue()), { ids: ["b", "a"], separator: "newline" });
-    assert.equal(first.widget.value, '["b","a"]');
+    assert.deepEqual(JSON.parse(first.widget.value), { ids: ["b", "a"], separator: "period" });
+    assert.equal(first.widget.serializeValue(), first.widget.value);
+    const restored = harness.createNode();
+    restored.widget.value = first.widget.value;
+    await flush();
+    assert.deepEqual(restored.selection(), ["b", "a"]);
+    assert.equal(restored.separator(), "period");
     harness.push(payload([preset("a", "Renamed"), preset("b", "B")], 2));
     assert.equal(first.root.querySelector(".sp-preset-chip").textContent, "B");
     assert.equal(second.root.querySelector(".sp-preset-chip").textContent, "Renamed");
+    assert.equal(first.separator(), "period");
+    assert.equal(second.separator(), "comma");
 });
 
 test("selection accepts execution-format values when a workflow is restored", async () => {
@@ -40,6 +47,61 @@ test("selection accepts execution-format values when a workflow is restored", as
     node.widget.value = '{"ids":["a"],"separator":"newline"}';
     await flush();
     assert.deepEqual(node.selection(), ["a"]);
+    assert.equal(node.separator(), "newline");
+});
+
+test("the separator button sits before reload and cycles locally without changing selections", async () => {
+    const harness = frontendHarness(payload([preset("a", "A")]));
+    harness.app.extensionManager.setting.get = () => "comma";
+    const first = harness.createNode();
+    const second = harness.createNode();
+    await flush();
+    first.widget.value = '["a"]';
+    const button = first.root.querySelector(".sp-separator-button");
+    const header = first.root.querySelector(".sp-header");
+    const reload = first.button("Reload shared presets");
+    assert.equal(header.children.indexOf(button) + 1, header.children.indexOf(reload));
+    const requestCount = harness.calls.length;
+    for (const [value, symbol, name] of [
+        ["comma", ",", "Comma"],
+        ["newline", "↩", "Newline"],
+        ["period", ".", "Period"],
+        ["comma_newline", ",↩", "Comma + newline"],
+    ]) {
+        assert.equal(button.textContent, symbol);
+        assert.equal(first.separator(), value);
+        assert.ok(button.title.includes(`Separator: ${name}`));
+        assert.match(button.getAttribute("aria-label"), /Click to cycle/);
+        assert.deepEqual(JSON.parse(first.widget.serializeValue()), { ids: ["a"], separator: value });
+        button.click();
+    }
+    assert.equal(first.separator(), "comma");
+    assert.equal(second.separator(), "comma");
+    assert.deepEqual(first.selection(), ["a"]);
+    assert.equal(harness.calls.length, requestCount);
+});
+
+test("global separator changes affect only newly created nodes", async () => {
+    const harness = frontendHarness(payload([preset("a", "A")]));
+    harness.app.extensionManager.setting.get = () => "comma";
+    const existing = harness.createNode();
+    existing.widget.value = '["a"]';
+    const saved = existing.widget.value;
+    harness.app.extensionManager.setting.get = () => "period";
+    const fresh = harness.createNode();
+    const restored = harness.createNode();
+    restored.widget.value = saved;
+    await flush();
+    assert.equal(existing.separator(), "comma");
+    assert.equal(fresh.separator(), "period");
+    assert.equal(restored.separator(), "comma");
+    assert.equal(existing.widget.serializeValue(), saved);
+    fresh.root.querySelector(".sp-separator-button").click();
+    assert.equal(fresh.separator(), "comma_newline");
+    assert.equal(existing.separator(), "comma");
+    harness.push(payload([preset("a", "Updated")], 2));
+    assert.equal(fresh.separator(), "comma_newline");
+    assert.equal(restored.separator(), "comma");
 });
 
 test("restoring a workflow after presets were loaded retains missing ids and their positions", async () => {

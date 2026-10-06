@@ -2,7 +2,8 @@
 
 Simple Preset is a small, dependency-free ComfyUI custom node for managing named
 prompt presets. Presets are shared between workflows, while each workflow stores
-only its own selected preset IDs and the profile last displayed by that node.
+only its own selected preset IDs, separator, and the profile last displayed by
+that node.
 
 The node interface, settings, and messages are in English by default. Preset and
 profile names and prompt text support Unicode, including Japanese.
@@ -31,16 +32,16 @@ Shared profiles and presets are stored outside the custom-node package in
 node is removed or reinstalled. Writes are atomic, and manually edited valid JSON
 is reloaded automatically.
 
-A workflow stores only a JSON array of selected preset IDs in the node widget and
+A workflow stores selected preset IDs and a separator in the node widget, plus
 the last displayed profile ID in the node properties. Names, prompt text, and
 profile names remain exclusively in the shared preset file.
 
 If a selected preset is deleted or unavailable, its ID and position are kept in
 the workflow. The node shows a warning and a `Missing` chip, and execution fails
 with a clear error instead of producing an incomplete prompt. Restore the preset
-with the same ID and reload to recover the selection automatically, or click the missing
-chip's × to remove that selection from this node. Creating a new preset with the
-same name does not restore it because new presets receive new IDs.
+with the same ID and reload to recover the selection automatically, or click the
+missing chip's × to remove that selection from this node. Creating a new preset
+with the same name does not restore it because new presets receive new IDs.
 
 Changing profiles filters the visible list without clearing selections in other
 profiles. Select-all follows the current search results, while clear-selection
@@ -53,13 +54,22 @@ currently displayed profile automatically. Other profiles can be renamed or
 deleted.
 
 Selected non-empty prompts are joined in the order shown by the applied preset
-chips at the bottom of the node. The separator can be set to comma (`, `), newline,
-or comma plus newline in **Settings > Simple Preset > Output**. This preference is
-applied at execution time and is not stored in workflow JSON. Drag a rounded
-preset-name chip to change the order for that workflow only. The sort menu
-changes the shared list order within the displayed profile without changing a
-workflow's applied order or other profiles' ordering. Choose all profiles to sort
-the entire shared list.
+chips at the bottom of the node. Click the separator button immediately to the
+left of reload to cycle through `,` → `↩` → `.` → `,↩`: comma and space, newline,
+period and space, or comma and space followed by newline. Spaces are implicit and
+are not shown on the button. Each node saves its own separator in the workflow.
+**Settings > Simple Preset > Output > Default preset separator** controls only the
+initial separator for newly created nodes.
+
+Period mode joins natural-language fragments with `. `, or just a space when
+the previous fragment already ends in `.`, `!`, or `?`. Whitespace at joined
+boundaries is normalized, and whitespace-only fragments are skipped in this mode.
+It does not add a final period to the last fragment.
+
+Drag a rounded preset-name chip to change the order for that workflow only.
+The sort menu changes the shared list order within the displayed profile without
+changing a workflow's applied order or other profiles' ordering. Choose all
+profiles to sort the entire shared list.
 
 ## Development checks
 

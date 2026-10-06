@@ -13,9 +13,12 @@ import {
     DEFAULT_SEPARATOR,
     SEPARATOR_OPTIONS,
     SEPARATOR_SETTING_ID,
-    executionSelectionValue,
+    SEPARATOR_SYMBOLS,
+    nextSeparator,
     normalizeSeparator,
     removeLegacyInternalInputs,
+    selectionSeparator,
+    selectionValue,
 } from "./separator_state.js";
 
 const controllers = new Set();
@@ -77,6 +80,7 @@ function installStyles() {
             width: 28px; height: 28px; padding: 5px; line-height: 1;
             display: inline-flex; align-items: center; justify-content: center; flex: none;
         }
+        .sp-separator-button { padding: 0 3px; font-size: 16px; font-weight: 600; }
         .sp-icon-button svg, .sp-inline-icon svg { width: 100%; height: 100%; display: block; }
         .sp-icon-button:hover { border-color: var(--sp-accent); }
         .sp-icon-button:active { transform: translateY(1px); }
@@ -565,6 +569,8 @@ function createPresetWidget(node, inputName, inputData) {
     let presets = [];
     let hasSnapshot = false;
     let selectedIds = parseSelection(inputData?.[1]?.default ?? "[]");
+    const initialSeparator = separatorSettingValue();
+    let separator = selectionSeparator(inputData?.[1]?.default ?? "[]", initialSeparator);
     let currentProfileId = storedProfileId(node);
     let presetFormProfileId = DEFAULT_PROFILE_ID;
     let editingId = null;
@@ -588,9 +594,11 @@ function createPresetWidget(node, inputName, inputData) {
     const header = element("div", "sp-header");
     const title = element("div", "sp-title", "Presets");
     const count = element("div", "sp-count", "0 / 0");
+    const separatorButton = element("button", "sp-icon-button sp-separator-button");
+    separatorButton.type = "button";
     const reloadButton = iconButton("refresh", "Reload shared presets");
     const addButton = iconButton("add", "Add preset", "sp-icon-button sp-primary");
-    header.append(title, count, reloadButton, addButton);
+    header.append(title, count, separatorButton, reloadButton, addButton);
 
     const profileSection = element("div", "sp-profile-section");
     const profileToolbar = element("div", "sp-profile-toolbar");
@@ -1041,6 +1049,11 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     function render() {
+        const separatorLabel = SEPARATOR_OPTIONS.find((option) => option.value === separator).text;
+        separatorButton.textContent = SEPARATOR_SYMBOLS[separator];
+        separatorButton.dataset.separator = separator;
+        separatorButton.title = `Separator: ${separatorLabel}\nClick to cycle`;
+        separatorButton.setAttribute("aria-label", `Separator: ${separatorLabel}. Click to cycle.`);
         summary.classList.remove("sp-drag-active");
         root.classList.toggle("sp-form-open", formVisible);
         form.classList.toggle("sp-hidden", !formVisible);
@@ -1300,6 +1313,11 @@ function createPresetWidget(node, inputName, inputData) {
     };
     controllers.add(controller);
 
+    separatorButton.addEventListener("click", () => {
+        separator = nextSeparator(separator);
+        markChanged();
+        render();
+    });
     reloadButton.addEventListener("click", () => controller.refresh());
     addButton.addEventListener("click", () => openForm());
     bindProfileMenu(profileButton, profileMenu, profileMenuEntry);
@@ -1385,9 +1403,10 @@ function createPresetWidget(node, inputName, inputData) {
 
     widget = node.addDOMWidget(inputName, "simple_preset_selection", root, {
         serialize: true,
-        getValue: () => JSON.stringify(selectedIds),
+        getValue: () => selectionValue(selectedIds, separator),
         setValue: (value) => {
             selectedIds = parseSelection(value);
+            separator = selectionSeparator(value, initialSeparator);
             currentProfileId = storedProfileId(node);
             if (profiles.length) {
                 rebuildProfileOptions();
@@ -1400,10 +1419,7 @@ function createPresetWidget(node, inputName, inputData) {
         hideOnZoom: false,
         socketless: true,
     });
-    widget.serializeValue = () => executionSelectionValue(
-        selectedIds,
-        separatorSettingValue(),
-    );
+    widget.serializeValue = () => selectionValue(selectedIds, separator);
     widget.computeSize = (width) => [width, 480];
 
     function deactivate() {
@@ -1459,12 +1475,12 @@ app.registerExtension({
     settings: [
         {
             id: SEPARATOR_SETTING_ID,
-            name: "Preset separator",
+            name: "Default preset separator",
             type: "combo",
             defaultValue: DEFAULT_SEPARATOR,
             options: SEPARATOR_OPTIONS,
-            category: ["Simple Preset", "Output", "Preset separator"],
-            tooltip: "Separator used to join the selected preset prompts.",
+            category: ["Simple Preset", "Output", "Default preset separator"],
+            tooltip: "Initial separator for new nodes. Each node saves its own separator.",
         },
     ],
     getCustomWidgets() {

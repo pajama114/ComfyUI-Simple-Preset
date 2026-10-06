@@ -81,6 +81,22 @@ assert module.WEB_DIRECTORY == './web'
                 self.assertEqual(node.build_prompt(workflow_one), ("updated\ntwo",))
                 self.assertEqual(node.build_prompt(workflow_two), ("two, updated",))
 
+    def test_saved_separators_execute_independently_and_invalidate_the_node_cache(self):
+        store_class = sys.modules[f"{PACKAGE_NAME}.preset_store"].PresetStore
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "presets.json"
+            store = store_class(path)
+            first = store.create("First", "A quiet room.")
+            second = store.create("Second", "Sunlight enters")
+            ids = [first["id"], second["id"]]
+            comma = json.dumps({"ids": ids, "separator": "comma"})
+            period = json.dumps({"ids": ids, "separator": "period"})
+            with patch.object(nodes, "PRESET_STORE", store_class(path)):
+                node = nodes.SimplePreset()
+                self.assertEqual(node.build_prompt(comma), ("A quiet room., Sunlight enters",))
+                self.assertEqual(node.build_prompt(period), ("A quiet room. Sunlight enters",))
+                self.assertNotEqual(node.IS_CHANGED(comma), node.IS_CHANGED(period))
+
     def test_change_token_receives_execution_selection(self):
         selected = '{"ids":["first"],"separator":"comma_newline"}'
         with patch.object(nodes.PRESET_STORE, "change_token", return_value="token") as token:

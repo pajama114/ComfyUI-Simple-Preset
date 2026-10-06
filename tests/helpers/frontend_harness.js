@@ -152,7 +152,8 @@ export function frontendHarness(initialPayload) {
                 button: (label) => widget.root.querySelectorAll("button")
                     .find((button) => button.title === label || button.getAttribute("aria-label") === label),
                 rows: () => widget.root.querySelectorAll(".sp-row"),
-                selection: () => JSON.parse(widget.value),
+                selection: () => JSON.parse(widget.value).ids,
+                separator: () => JSON.parse(widget.value).separator,
             };
         },
     };

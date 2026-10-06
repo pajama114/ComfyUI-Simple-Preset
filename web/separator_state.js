@@ -4,8 +4,16 @@ export const SEPARATOR_SETTING_ID = "SimplePreset.OutputSeparator";
 export const SEPARATOR_OPTIONS = [
     { text: "Comma", value: "comma" },
     { text: "Newline", value: "newline" },
+    { text: "Period", value: "period" },
     { text: "Comma + newline", value: "comma_newline" },
 ];
+
+export const SEPARATOR_SYMBOLS = {
+    comma: ",",
+    newline: "↩",
+    period: ".",
+    comma_newline: ",↩",
+};
 
 const separatorValues = new Set(SEPARATOR_OPTIONS.map((option) => option.value));
 
@@ -13,7 +21,21 @@ export function normalizeSeparator(value) {
     return separatorValues.has(value) ? value : DEFAULT_SEPARATOR;
 }
 
-export function executionSelectionValue(selectedIds, separator) {
+export function nextSeparator(value) {
+    const values = [...separatorValues];
+    return values[(values.indexOf(normalizeSeparator(value)) + 1) % values.length];
+}
+
+export function selectionSeparator(value, fallback = DEFAULT_SEPARATOR) {
+    try {
+        const parsed = typeof value === "string" ? JSON.parse(value) : value;
+        return normalizeSeparator(parsed?.separator ?? fallback);
+    } catch (_error) {
+        return normalizeSeparator(fallback);
+    }
+}
+
+export function selectionValue(selectedIds, separator) {
     return JSON.stringify({
         ids: selectedIds,
         separator: normalizeSeparator(separator),

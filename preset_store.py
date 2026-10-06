@@ -40,7 +40,8 @@ class PresetStore:
     SEPARATORS = {
         "comma": ", ",
         "newline": "\n",
-        "comma_newline": ",\n",
+        "period": ". ",
+        "comma_newline": ", \n",
     }
 
     def __init__(self, path: str | Path, *, load_on_init: bool = True):
@@ -526,11 +527,24 @@ class PresetStore:
                     "Restore them in the shared preset file or remove their missing "
                     "selections from this node before running."
                 )
-            return delimiter.join(
+            prompts = [
                 by_id[preset_id]["prompt"]
                 for preset_id in selected_ids
                 if by_id[preset_id]["prompt"]
-            )
+            ]
+            if normalized_separator != "period":
+                return delimiter.join(prompts)
+            parts: list[str] = []
+            for prompt in prompts:
+                if not prompt.strip():
+                    continue
+                if parts:
+                    previous = parts[-1].rstrip()
+                    parts[-1] = previous
+                    parts.append(" " if previous.endswith((".", "!", "?")) else delimiter)
+                    prompt = prompt.lstrip()
+                parts.append(prompt)
+            return "".join(parts)
 
     def change_token(
         self, selected: object, separator: object | None = None
