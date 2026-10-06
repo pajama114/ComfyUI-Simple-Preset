@@ -506,7 +506,7 @@ function notifyLocal(payload) {
 }
 
 function showError(message) {
-    const detail = message || "不明なエラーが発生しました。";
+    const detail = message || "An unknown error occurred.";
     const toast = app.extensionManager?.toast;
     if (toast?.add) {
         toast.add({
@@ -524,20 +524,21 @@ async function confirmDelete(name) {
     const dialog = app.extensionManager?.dialog;
     if (dialog?.confirm) {
         return Boolean(await dialog.confirm({
-            title: "プリセットを削除",
-            message: `「${name}」を削除します。この操作は元に戻せません。`,
+            title: "Delete preset",
+            message: `Delete "${name}"? This action cannot be undone.`,
         }));
     }
-    return window.confirm(`「${name}」を削除しますか？`);
+    return window.confirm(`Delete "${name}"? This action cannot be undone.`);
 }
 
 async function confirmProfileDelete(name, presetCount) {
-    const message = `「${name}」と所属するプリセット${presetCount}件をすべて削除します。`
-        + "この操作は元に戻せません。";
+    const presetLabel = presetCount === 1 ? "preset" : "presets";
+    const message = `Delete "${name}" and all ${presetCount} ${presetLabel} in this profile? `
+        + "This action cannot be undone.";
     const dialog = app.extensionManager?.dialog;
     if (dialog?.confirm) {
         return Boolean(await dialog.confirm({
-            title: "プロファイルを削除",
+            title: "Delete profile",
             message,
         }));
     }
@@ -574,15 +575,15 @@ function createPresetWidget(node, inputName, inputData) {
     });
 
     const header = element("div", "sp-header");
-    const title = element("div", "sp-title", "プリセット");
+    const title = element("div", "sp-title", "Presets");
     const count = element("div", "sp-count", "0 / 0");
-    const reloadButton = iconButton("refresh", "共有プリセットを再読込");
-    const addButton = iconButton("add", "新しいプリセットを追加", "sp-icon-button sp-primary");
+    const reloadButton = iconButton("refresh", "Reload shared presets");
+    const addButton = iconButton("add", "Add preset", "sp-icon-button sp-primary");
     header.append(title, count, reloadButton, addButton);
 
     const profileSection = element("div", "sp-profile-section");
     const profileToolbar = element("div", "sp-profile-toolbar");
-    const profileLabel = element("label", "sp-profile-label", "プロファイル");
+    const profileLabel = element("label", "sp-profile-label", "Profile");
     const profileControl = element("div", "sp-profile-control");
     const profileButton = element("button", "sp-profile-button");
     profileButton.type = "button";
@@ -596,10 +597,10 @@ function createPresetWidget(node, inputName, inputData) {
     // ComfyUI has not assigned node IDs yet when custom widgets are created.
     profileButton.id = `sp-profile-${++profileControlId}`;
     profileLabel.htmlFor = profileButton.id;
-    const addProfileButton = iconButton("add", "新しいプロファイルを追加");
-    const editProfileButton = iconButton("edit", "現在のプロファイル名を変更");
+    const addProfileButton = iconButton("add", "Add profile");
+    const editProfileButton = iconButton("edit", "Rename current profile");
     const deleteProfileButton = iconButton(
-        "delete", "現在のプロファイルと所属プリセットを削除", "sp-icon-button sp-danger"
+        "delete", "Delete current profile and its presets", "sp-icon-button sp-danger"
     );
     profileToolbar.append(
         profileLabel,
@@ -618,28 +619,28 @@ function createPresetWidget(node, inputName, inputData) {
     const profileNameInput = element("input", "sp-input");
     profileNameInput.type = "text";
     profileNameInput.maxLength = 120;
-    profileNameInput.placeholder = "プロファイル名";
-    const cancelProfileButton = iconButton("cancel", "プロファイル編集を取り消す");
-    const saveProfileButton = iconButton("save", "プロファイルを保存", "sp-icon-button sp-primary");
+    profileNameInput.placeholder = "Profile name";
+    const cancelProfileButton = iconButton("cancel", "Cancel profile editing");
+    const saveProfileButton = iconButton("save", "Save profile", "sp-icon-button sp-primary");
     profileForm.append(profileNameInput, cancelProfileButton, saveProfileButton);
     profileSection.append(profileToolbar, profileForm);
 
     const toolbar = element("div", "sp-toolbar");
     const search = element("input", "sp-search");
     search.type = "search";
-    search.placeholder = "名前・プロンプトを検索";
+    search.placeholder = "Search names and prompts";
     const sortControl = element("div", "sp-sort-control");
-    const sortButton = iconButton("sort", "並べ替え");
+    const sortButton = iconButton("sort", "Sort");
     sortButton.setAttribute("aria-haspopup", "menu");
     sortButton.setAttribute("aria-expanded", "false");
     const sortMenu = element("div", "sp-sort-menu sp-hidden");
-    const sortByNameButton = labeledIconButton("name", "名前", "sp-sort-option");
-    const sortByPromptButton = labeledIconButton("prompt", "プロンプト", "sp-sort-option");
-    const sortByCreatedButton = labeledIconButton("created", "追加順", "sp-sort-option");
-    const sortByUpdatedButton = labeledIconButton("updated", "更新順", "sp-sort-option");
+    const sortByNameButton = labeledIconButton("name", "Name", "sp-sort-option");
+    const sortByPromptButton = labeledIconButton("prompt", "Prompt", "sp-sort-option");
+    const sortByCreatedButton = labeledIconButton("created", "Date added", "sp-sort-option");
+    const sortByUpdatedButton = labeledIconButton("updated", "Last updated", "sp-sort-option");
     const sortDirectionControl = element("div", "sp-sort-direction");
-    const ascendingButton = labeledIconButton("up", "昇順", "sp-sort-direction-button");
-    const descendingButton = labeledIconButton("down", "降順", "sp-sort-direction-button");
+    const ascendingButton = labeledIconButton("up", "Ascending", "sp-sort-direction-button");
+    const descendingButton = labeledIconButton("down", "Descending", "sp-sort-direction-button");
     sortDirectionControl.append(ascendingButton, descendingButton);
     sortMenu.append(
         sortByNameButton,
@@ -651,24 +652,24 @@ function createPresetWidget(node, inputName, inputData) {
     sortControl.append(sortButton, sortMenu);
     const sortMenuEntry = { control: sortControl, menu: sortMenu, button: sortButton };
     popupMenus.add(sortMenuEntry);
-    const selectAllButton = iconButton("selectAll", "表示中のプリセットをすべて選択");
-    const clearButton = iconButton("clear", "現在のプロファイルの選択を解除");
+    const selectAllButton = iconButton("selectAll", "Select all visible presets");
+    const clearButton = iconButton("clear", "Clear selection in current profile");
     toolbar.append(search, sortControl, selectAllButton, clearButton);
 
     const form = element("div", "sp-form sp-hidden");
     const formHeader = element("div", "sp-form-header");
-    const formTitle = element("div", "sp-form-title", "プリセットを追加");
+    const formTitle = element("div", "sp-form-title", "Add preset");
     const nameInput = element("input", "sp-input");
     nameInput.type = "text";
     nameInput.maxLength = 120;
-    nameInput.placeholder = "プリセット名";
+    nameInput.placeholder = "Preset name";
     const promptInput = element("textarea", "sp-textarea");
     promptInput.maxLength = 100000;
-    promptInput.placeholder = "プロンプト本文";
+    promptInput.placeholder = "Prompt text";
     const presetProfileControl = element("div", "sp-profile-control");
     const presetProfileButton = element("button", "sp-profile-button");
     presetProfileButton.type = "button";
-    presetProfileButton.setAttribute("aria-label", "所属プロファイル");
+    presetProfileButton.setAttribute("aria-label", "Preset profile");
     presetProfileButton.setAttribute("aria-haspopup", "listbox");
     presetProfileButton.setAttribute("aria-expanded", "false");
     const presetProfileButtonText = element(
@@ -686,12 +687,12 @@ function createPresetWidget(node, inputName, inputData) {
     popupMenus.add(presetProfileMenuEntry);
     const presetProfileField = element("div", "sp-form-field");
     presetProfileField.append(
-        element("span", "sp-form-label", "所属プロファイル"),
+        element("span", "sp-form-label", "Profile"),
         presetProfileControl,
     );
     const formActions = element("div", "sp-form-actions");
-    const cancelButton = iconButton("cancel", "編集を取り消す");
-    const saveButton = iconButton("save", "プリセットを保存", "sp-icon-button sp-primary");
+    const cancelButton = iconButton("cancel", "Cancel editing");
+    const saveButton = iconButton("save", "Save preset", "sp-icon-button sp-primary");
     formActions.append(cancelButton, saveButton);
     formHeader.append(formTitle, formActions);
     form.append(formHeader, nameInput, presetProfileField, promptInput);
@@ -699,7 +700,7 @@ function createPresetWidget(node, inputName, inputData) {
     const list = element("div", "sp-list");
     list.tabIndex = 0;
     list.setAttribute("role", "listbox");
-    list.setAttribute("aria-label", "プリセット一覧");
+    list.setAttribute("aria-label", "Preset list");
     list.addEventListener("wheel", (event) => {
         if (!isNodeSelected(node)) return;
         if (list.scrollHeight <= list.clientHeight) return;
@@ -717,11 +718,11 @@ function createPresetWidget(node, inputName, inputData) {
     });
     const summary = element("div", "sp-summary");
     const summaryLabel = element("span", "sp-summary-label sp-inline-icon");
-    summaryLabel.title = "選択中のプリセット";
+    summaryLabel.title = "Selected presets";
     summaryLabel.append(icon("output"));
     const summaryChips = element("div", "sp-summary-chips");
     summaryChips.setAttribute("role", "listbox");
-    summaryChips.setAttribute("aria-label", "適用プリセット（ドラッグで順序変更）");
+    summaryChips.setAttribute("aria-label", "Selected presets (drag to reorder)");
     summary.append(summaryLabel, summaryChips);
     const selectionNotice = element("div", "sp-selection-notice sp-hidden");
     root.append(profileSection, header, toolbar, form, list, selectionNotice, summary);
@@ -751,7 +752,7 @@ function createPresetWidget(node, inputName, inputData) {
         }
 
         const choices = [
-            { id: ALL_PROFILES, label: `すべてのプリセット (${presets.length})` },
+            { id: ALL_PROFILES, label: `All presets (${presets.length})` },
             ...profiles.map((profile) => ({
                 id: profile.id,
                 label: `${profile.name} (${presets.filter(
@@ -762,7 +763,7 @@ function createPresetWidget(node, inputName, inputData) {
         renderProfileChoices(profileMenu, choices, currentProfileId, selectProfile);
         profileButtonText.textContent = choices.find(
             (choice) => choice.id === currentProfileId
-        )?.label ?? "プロファイルを選択";
+        )?.label ?? "Select a profile";
 
         rebuildPresetProfileOptions();
     }
@@ -786,7 +787,7 @@ function createPresetWidget(node, inputName, inputData) {
         );
         presetProfileButtonText.textContent = profiles.find(
             (profile) => profile.id === presetFormProfileId
-        )?.name ?? "プロファイルを選択";
+        )?.name ?? "Select a profile";
     }
 
     function selectProfile(profileId) {
@@ -852,7 +853,7 @@ function createPresetWidget(node, inputName, inputData) {
         profileNameInput.value = "";
         editingId = preset?.id ?? null;
         formVisible = true;
-        formTitle.textContent = preset ? "プリセットを編集" : "プリセットを追加";
+        formTitle.textContent = preset ? "Edit preset" : "Add preset";
         nameInput.value = preset?.name ?? "";
         promptInput.value = preset?.prompt ?? "";
         presetFormProfileId = preset?.profile_id
@@ -884,7 +885,7 @@ function createPresetWidget(node, inputName, inputData) {
         editingProfileId = profile?.id ?? null;
         profileFormVisible = true;
         profileNameInput.value = profile?.name ?? "";
-        profileNameInput.placeholder = profile ? "新しいプロファイル名" : "プロファイル名";
+        profileNameInput.placeholder = profile ? "New profile name" : "Profile name";
         render();
         requestAnimationFrame(() => profileNameInput.focus());
     }
@@ -919,11 +920,11 @@ function createPresetWidget(node, inputName, inputData) {
         const name = nameInput.value.trim();
         const prompt = promptInput.value;
         if (!editingId && currentProfileId === ALL_PROFILES) {
-            showError("プリセットを追加するプロファイルを選択してください。");
+            showError("Select a profile before adding a preset.");
             return;
         }
         if (!name) {
-            nameInput.setCustomValidity("プリセット名を入力してください。");
+            nameInput.setCustomValidity("Enter a preset name.");
             nameInput.reportValidity();
             nameInput.focus();
             return;
@@ -949,7 +950,7 @@ function createPresetWidget(node, inputName, inputData) {
         if (loading || !active) return;
         const name = profileNameInput.value.trim();
         if (!name) {
-            profileNameInput.setCustomValidity("プロファイル名を入力してください。");
+            profileNameInput.setCustomValidity("Enter a profile name.");
             profileNameInput.reportValidity();
             profileNameInput.focus();
             return;
@@ -1043,12 +1044,12 @@ function createPresetWidget(node, inputName, inputData) {
             && currentProfile.id !== DEFAULT_PROFILE_ID
             && profiles.length > 1;
         count.textContent = `${selectedInProfile} / ${scoped.length}`;
-        count.title = `全体では${selected.size}件選択中`;
+        count.title = `${selected.size} selected across all profiles`;
         const canAddPreset = currentProfileId !== ALL_PROFILES;
         addButton.disabled = loading || !canAddPreset;
         const addPresetTitle = canAddPreset
-            ? "現在のプロファイルに新しいプリセットを追加"
-            : "プリセットを追加するプロファイルを選択してください";
+            ? "Add preset to current profile"
+            : "Select a profile before adding a preset";
         addButton.title = addPresetTitle;
         addButton.setAttribute("aria-label", addPresetTitle);
         saveButton.disabled = loading || (!editingId && currentProfileId === ALL_PROFILES);
@@ -1058,13 +1059,13 @@ function createPresetWidget(node, inputName, inputData) {
         editProfileButton.disabled = loading || !canEditCurrentProfile;
         deleteProfileButton.disabled = loading || !canDeleteCurrentProfile;
         const editProfileTitle = currentProfile?.id === DEFAULT_PROFILE_ID
-            ? "Defaultプロファイルは名前変更できません"
-            : "現在のプロファイル名を変更";
+            ? "The Default profile cannot be renamed"
+            : "Rename current profile";
         const deleteProfileTitle = currentProfile?.id === DEFAULT_PROFILE_ID
-            ? "Defaultプロファイルは削除できません"
+            ? "The Default profile cannot be deleted"
             : profiles.length <= 1 && currentProfile
-                ? "最後のプロファイルは削除できません"
-                : "現在のプロファイルと所属プリセットを削除";
+                ? "The last profile cannot be deleted"
+                : "Delete current profile and its presets";
         editProfileButton.title = editProfileTitle;
         editProfileButton.setAttribute("aria-label", editProfileTitle);
         deleteProfileButton.title = deleteProfileTitle;
@@ -1101,32 +1102,32 @@ function createPresetWidget(node, inputName, inputData) {
             "sp-hidden",
             currentProfileId === ALL_PROFILES || selectedOutsideProfile === 0,
         );
-        selectionNotice.textContent = `他のプロファイルで${selectedOutsideProfile}件選択中`;
+        selectionNotice.textContent = `Selected in other profiles: ${selectedOutsideProfile}`;
 
         list.replaceChildren();
         if (!presets.length) {
-            list.append(element("div", "sp-empty", "プリセットはまだありません。上部の＋アイコンから登録できます。"));
+            list.append(element("div", "sp-empty", "No presets yet. Click + above to add one."));
         } else if (!scoped.length) {
-            list.append(element("div", "sp-empty", "このプロファイルにはプリセットがありません。"));
+            list.append(element("div", "sp-empty", "No presets in this profile."));
         } else if (!visible.length) {
-            list.append(element("div", "sp-empty", "検索条件に一致するプリセットがありません。"));
+            list.append(element("div", "sp-empty", "No presets match your search."));
         } else {
             for (const [index, preset] of visible.entries()) {
                 const row = element("div", `sp-row${selected.has(preset.id) ? " sp-selected" : ""}`);
                 const checkbox = element("input", "sp-check");
                 checkbox.type = "checkbox";
                 checkbox.checked = selected.has(preset.id);
-                checkbox.setAttribute("aria-label", `${preset.name}を選択`);
+                checkbox.setAttribute("aria-label", `Select ${preset.name}`);
                 const order = element("span", "sp-order", String(index + 1));
                 const copy = element("div", "sp-copy");
                 const presetName = element("div", "sp-name", preset.name);
-                const presetPrompt = element("div", "sp-prompt", preset.prompt || "（空のプロンプト）");
+                const presetPrompt = element("div", "sp-prompt", preset.prompt || "(Empty prompt)");
                 presetName.title = preset.name;
                 presetPrompt.title = preset.prompt;
                 copy.append(presetName, presetPrompt);
                 const actions = element("div", "sp-actions");
-                const edit = iconButton("edit", "編集");
-                const remove = iconButton("delete", "削除", "sp-icon-button sp-danger");
+                const edit = iconButton("edit", "Edit preset");
+                const remove = iconButton("delete", "Delete preset", "sp-icon-button sp-danger");
                 edit.disabled = loading;
                 remove.disabled = loading;
                 actions.append(edit, remove);
@@ -1152,7 +1153,7 @@ function createPresetWidget(node, inputName, inputData) {
         const presetsById = new Map(presets.map((preset) => [preset.id, preset]));
         summaryChips.replaceChildren();
         if (!selectedIds.length) {
-            summaryChips.append(element("span", "sp-summary-empty", "（未選択）"));
+            summaryChips.append(element("span", "sp-summary-empty", "(None selected)"));
         } else {
             for (const [index, presetId] of selectedIds.entries()) {
                 const preset = presetsById.get(presetId);
@@ -1161,12 +1162,12 @@ function createPresetWidget(node, inputName, inputData) {
                 chip.type = "button";
                 chip.draggable = true;
                 chip.dataset.presetId = preset.id;
-                chip.title = `${preset.name}\nドラッグで適用順を変更`;
+                chip.title = `${preset.name}\nDrag to reorder selected presets`;
                 chip.setAttribute("role", "option");
                 chip.setAttribute("aria-selected", "true");
                 chip.setAttribute(
                     "aria-label",
-                    `${preset.name}、適用順 ${index + 1} / ${selectedIds.length}`,
+                    `${preset.name}, position ${index + 1} of ${selectedIds.length}`,
                 );
                 chip.addEventListener("dragstart", (event) => {
                     event.stopPropagation();
@@ -1428,12 +1429,12 @@ app.registerExtension({
     settings: [
         {
             id: SEPARATOR_SETTING_ID,
-            name: "プリセット間の区切り",
+            name: "Preset separator",
             type: "combo",
             defaultValue: DEFAULT_SEPARATOR,
             options: SEPARATOR_OPTIONS,
-            category: ["Simple Preset", "出力", "プリセット間の区切り"],
-            tooltip: "選択したプリセットのプロンプトを結合するときの区切り文字です。",
+            category: ["Simple Preset", "Output", "Preset separator"],
+            tooltip: "Separator used to join the selected preset prompts.",
         },
     ],
     getCustomWidgets() {

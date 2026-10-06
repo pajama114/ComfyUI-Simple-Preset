@@ -4,6 +4,9 @@ Simple Preset is a small, dependency-free ComfyUI custom node for managing named
 prompt presets. Presets are shared between workflows, while each workflow stores
 only its own selected preset IDs and the profile last displayed by that node.
 
+The node interface, settings, and messages are in English by default. Preset and
+profile names and prompt text support Unicode, including Japanese.
+
 ## Features
 
 - One node with one `STRING` output
@@ -43,7 +46,7 @@ deleted.
 
 Selected non-empty prompts are joined in the order shown by the applied preset
 chips at the bottom of the node. The separator can be set to comma (`, `), newline,
-or comma plus newline in **Settings > Simple Preset > 出力**. This preference is
+or comma plus newline in **Settings > Simple Preset > Output**. This preference is
 applied at execution time and is not stored in workflow JSON. Drag a rounded
 preset-name chip to change the order for that workflow only. The sort menu
 changes the shared list order within the displayed profile without changing a

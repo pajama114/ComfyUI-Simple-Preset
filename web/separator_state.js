@@ -2,9 +2,9 @@ export const DEFAULT_SEPARATOR = "comma";
 export const SEPARATOR_SETTING_ID = "SimplePreset.OutputSeparator";
 
 export const SEPARATOR_OPTIONS = [
-    { text: "コンマ", value: "comma" },
-    { text: "改行", value: "newline" },
-    { text: "コンマ＋改行", value: "comma_newline" },
+    { text: "Comma", value: "comma" },
+    { text: "Newline", value: "newline" },
+    { text: "Comma + newline", value: "comma_newline" },
 ];
 
 const separatorValues = new Set(SEPARATOR_OPTIONS.map((option) => option.value));

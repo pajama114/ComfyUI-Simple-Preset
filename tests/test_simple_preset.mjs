@@ -78,7 +78,7 @@ test("repeated save shortcuts send one create request", async () => {
     const harness = frontendHarness(payload([]));
     const node = harness.createNode();
     await flush();
-    node.button("現在のプロファイルに新しいプリセットを追加").click();
+    node.button("Add preset to current profile").click();
     node.root.querySelectorAll(".sp-input")[1].value = "New preset";
     const pending = deferred();
     harness.setFetch(() => pending.promise);
@@ -94,7 +94,7 @@ test("repeated profile save shortcuts send one create request", async () => {
     const harness = frontendHarness(payload([]));
     const node = harness.createNode();
     await flush();
-    node.button("新しいプロファイルを追加").click();
+    node.button("Add profile").click();
     const input = node.root.querySelectorAll(".sp-input")[0];
     input.value = "New profile";
     const pending = deferred();
