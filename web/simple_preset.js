@@ -20,6 +20,7 @@ import {
     selectionSeparator,
     selectionValue,
 } from "./separator_state.js";
+import { downloadDocument, effectivePresets, effectiveProfiles, makeBundle, readBundle } from "./transfer_state.js";
 
 const controllers = new Set();
 const scrollRegions = new Set();
@@ -278,6 +279,51 @@ function installStyles() {
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
         .sp-hidden { display: none !important; }
+        .sp-root.sp-library-setting { width: auto; height: auto; padding: 0; display: block; }
+        .sp-library-dialog {
+            box-sizing: border-box; width: min(560px, calc(100vw - 32px)); max-height: 85vh; padding: 16px;
+            border: 1px solid var(--border-color, #555); border-radius: 10px;
+            background: var(--comfy-menu-bg, #202226); color: var(--input-text, #eee);
+        }
+        :root:not(.dark-theme) .sp-library-dialog { background: #fbfbfc; color: #202328; }
+        .sp-library-dialog::backdrop { background: rgba(0, 0, 0, .35); }
+        .sp-root.sp-library-manager { height: auto; max-height: 70vh; padding: 0; }
+        .sp-library-header, .sp-library-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+        .sp-library-header strong { flex: 1; font-size: 15px; }
+        .sp-library-actions { flex-wrap: wrap; }
+        .sp-library-profile { min-width: 0; flex: 1; padding: 5px; }
+        .sp-library-note { color: var(--sp-muted); }
+        .sp-workflow-badge { font-size: 10px; color: var(--sp-muted); margin-left: 6px; }
+        .sp-transfer-form {
+            min-height: 0; display: flex; flex-direction: column; gap: 7px; padding: 8px;
+            border: 1px solid var(--sp-accent); border-radius: 8px; background: var(--sp-panel);
+        }
+        .sp-root.sp-transfer-open .sp-transfer-form { flex: 1 1 0; }
+        .sp-library-manager .sp-transfer-form { flex: 1 1 auto; overflow: hidden; }
+        .sp-root.sp-transfer-open .sp-form,
+        .sp-root.sp-transfer-open .sp-profile-form,
+        .sp-root.sp-transfer-open .sp-list,
+        .sp-root.sp-transfer-open .sp-selection-notice,
+        .sp-root.sp-transfer-open .sp-missing-notice,
+        .sp-root.sp-transfer-open .sp-summary { display: none; }
+        .sp-import-conflicts { min-height: 0; flex: 1; overflow-y: auto; }
+        .sp-import-conflict { padding: 7px 0; border-bottom: 1px solid var(--sp-border); }
+        .sp-import-conflict select {
+            width: 100%; margin-top: 5px; padding: 5px; border-radius: 6px;
+            border: 1px solid var(--sp-border); color: var(--sp-text);
+            background: var(--sp-panel); font: inherit;
+        }
+        .sp-import-conflict pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+        .sp-transfer-actions { display: flex; gap: 7px; justify-content: flex-end; }
+        .sp-transfer-action {
+            appearance: none; padding: 4px 9px; border-radius: 6px; cursor: pointer;
+            border: 1px solid var(--sp-border); color: var(--sp-text);
+            background: var(--sp-panel); font: inherit;
+        }
+        .sp-transfer-action.sp-primary {
+            border-color: var(--sp-accent); background: var(--sp-accent); color: white;
+        }
+        .sp-transfer-action:disabled, .sp-conflict-choice:disabled { opacity: .4; cursor: default; }
         @keyframes sp-spin { to { transform: rotate(360deg); } }
     `;
     document.head.appendChild(style);
@@ -471,6 +517,7 @@ function selectNodeFromWidget(node, event) {
 }
 
 function captureNodeWheel(event) {
+    if (event.target instanceof Element && event.target.closest(".sp-library-dialog")) return;
     for (const region of scrollRegions) {
         const rect = region.root.getBoundingClientRect();
         const inside = event.clientX >= rect.left
@@ -481,7 +528,7 @@ function captureNodeWheel(event) {
         if (!isNodeSelected(region.node)) continue;
 
         const eventTarget = event.target instanceof Element ? event.target : null;
-        const nestedScroller = eventTarget?.closest(".sp-textarea, .sp-summary, .sp-profile-menu");
+        const nestedScroller = eventTarget?.closest(".sp-textarea, .sp-summary, .sp-profile-menu, .sp-import-conflicts");
         const scrollTarget = nestedScroller && region.root.contains(nestedScroller)
             && nestedScroller.scrollHeight > nestedScroller.clientHeight
             ? nestedScroller
@@ -509,7 +556,10 @@ async function request(path, options = {}) {
         // Keep the status-based fallback below.
     }
     if (!response.ok) {
-        throw new Error(payload.error || `Request failed (${response.status})`);
+        const error = new Error(payload.error || `Request failed (${response.status})`);
+        error.status = response.status;
+        error.payload = payload;
+        throw error;
     }
     return payload;
 }
@@ -559,6 +609,261 @@ async function confirmProfileDelete(name, presetCount) {
     return window.confirm(message);
 }
 
+function createImportPanel({ getProfiles, isActive, onBusy = () => {}, onReview = () => {},
+    onClose = () => {}, beforeCommit = () => {} }) {
+    const root = element("div", "sp-transfer-form sp-hidden");
+    const summary = element("div", "sp-import-summary");
+    const conflicts = element("div", "sp-import-conflicts");
+    const actions = element("div", "sp-transfer-actions");
+    const cancelButton = element("button", "sp-transfer-action", "Cancel");
+    const importButton = element("button", "sp-transfer-action sp-primary", "Import");
+    cancelButton.type = importButton.type = "button";
+    actions.append(cancelButton, importButton);
+    root.append(element("strong", "", "Import presets"), summary, conflicts, actions);
+    let document = null;
+    let preview = null;
+    let busy = false;
+    let disabled = false;
+    let generation = 0;
+
+    function setDisabled(value) {
+        disabled = value;
+        cancelButton.disabled = importButton.disabled = busy || value;
+        for (const choice of conflicts.querySelectorAll("select")) choice.disabled = busy || value;
+    }
+
+    function setBusy(value) {
+        busy = value;
+        setDisabled(disabled);
+        onBusy(value);
+    }
+
+    function close() {
+        generation += 1;
+        document = preview = null;
+        root.classList.add("sp-hidden");
+        setBusy(false);
+        onClose();
+    }
+
+    function showReview(source, nextPreview) {
+        document = source;
+        preview = nextPreview;
+        summary.textContent = `${preview.added.length} new, ${preview.unchanged.length} unchanged, `
+            + `${preview.conflicts.length} conflicts, ${preview.profiles_added.length} new profiles.`;
+        conflicts.replaceChildren();
+        for (const conflict of preview.conflicts) {
+            const row = element("div", "sp-import-conflict");
+            const details = element("details", "");
+            details.append(element("summary", "", "Compare presets"));
+            for (const [label, preset] of [["Existing", conflict.existing], ["Imported", conflict.incoming]]) {
+                const profileName = [...getProfiles(), ...preview.profiles_added]
+                    .find((p) => p.id === preset.profile_id)?.name ?? preset.profile_id;
+                details.append(element("strong", "", `${label}: ${preset.name} (${profileName})`),
+                    element("pre", "", preset.prompt || "(Empty prompt)"));
+            }
+            const choice = element("select", "sp-conflict-choice");
+            choice.dataset.presetId = conflict.id;
+            choice.setAttribute("aria-label", `Import choice for ${conflict.incoming.name}`);
+            for (const [value, label] of [["keep", "Keep existing"], ["overwrite", "Update with imported"]]) {
+                const option = element("option", "", label);
+                option.value = value;
+                choice.append(option);
+            }
+            choice.value = "keep";
+            row.append(element("strong", "", conflict.incoming.name), details, choice);
+            conflicts.append(row);
+        }
+        root.classList.remove("sp-hidden");
+        onReview();
+    }
+
+    async function prepare(source) {
+        if (!isActive() || busy || disabled) return;
+        const requestGeneration = ++generation;
+        setBusy(true);
+        try {
+            const incoming = typeof source?.text === "function" ? JSON.parse(await source.text()) : source;
+            if (!isActive() || generation !== requestGeneration) return;
+            const result = await request("/simple-preset/import/preview", {
+                method: "POST", body: JSON.stringify({ document: incoming }),
+            });
+            if (isActive() && generation === requestGeneration) showReview(incoming, result);
+        } catch (error) {
+            if (isActive() && generation === requestGeneration) showError(error.message || String(error));
+        } finally {
+            if (generation === requestGeneration) setBusy(false);
+        }
+    }
+
+    async function apply() {
+        if (!isActive() || busy || disabled || !preview) return;
+        const requestGeneration = ++generation;
+        const incoming = document;
+        const expected = { store_id: preview.store_id, revision: preview.revision };
+        const resolutions = Object.fromEntries([...conflicts.querySelectorAll("select")]
+            .map((choice) => [choice.dataset.presetId, choice.value]));
+        beforeCommit();
+        setBusy(true);
+        try {
+            const payload = await request("/simple-preset/import", {
+                method: "POST", body: JSON.stringify({ document: incoming, resolutions, expected }),
+            });
+            notifyLocal(payload);
+            if (!isActive() || generation !== requestGeneration) return;
+            close();
+            const result = payload.import_result;
+            app.extensionManager?.toast?.add?.({ severity: "success", summary: "Simple Preset",
+                detail: `Imported: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`,
+                life: 5000 });
+        } catch (error) {
+            if (isActive() && generation === requestGeneration) {
+                if (error.status === 409 && error.payload?.preview) showReview(incoming, error.payload.preview);
+                showError(error.message || String(error));
+            }
+        } finally {
+            if (generation === requestGeneration) setBusy(false);
+        }
+    }
+
+    cancelButton.addEventListener("click", close);
+    importButton.addEventListener("click", apply);
+    return { root, prepare, close, setDisabled,
+        get visible() { return Boolean(preview); }, get busy() { return busy; } };
+}
+
+function createLibrarySetting() {
+    installStyles();
+    const root = element("div", "sp-root sp-library-setting");
+    const button = element("button", "sp-transfer-action", "Manage presets…");
+    button.type = "button";
+    button.addEventListener("click", () => openLibraryDialog(root));
+    root.append(button);
+    return root;
+}
+
+function openLibraryDialog(host) {
+    const dialog = element("dialog", "sp-library-dialog");
+    dialog.setAttribute("aria-label", "Preset library");
+    // Let the native dialog handle Escape without also dismissing ComfyUI settings.
+    dialog.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") event.stopPropagation();
+    });
+    const root = element("div", "sp-root sp-library-manager");
+    const header = element("div", "sp-library-header");
+    const done = element("button", "sp-transfer-action", "Close");
+    done.type = "button";
+    header.append(element("strong", "", "Preset library"), done);
+    const note = element("div", "sp-library-note", "Shared across all workflows. Loading library…");
+    note.setAttribute("role", "status");
+    const actions = element("div", "sp-library-actions");
+    const importButton = element("button", "sp-transfer-action", "Import JSON…");
+    const exportAllButton = element("button", "sp-transfer-action", "Export all presets");
+    importButton.type = exportAllButton.type = "button";
+    actions.append(importButton, exportAllButton);
+    const profileActions = element("div", "sp-library-actions");
+    const profileSelect = element("select", "sp-input sp-library-profile");
+    profileSelect.setAttribute("aria-label", "Profile to export");
+    const exportProfileButton = element("button", "sp-transfer-action", "Export profile");
+    exportProfileButton.type = "button";
+    profileActions.append(profileSelect, exportProfileButton);
+    const fileInput = element("input", "sp-hidden");
+    fileInput.type = "file";
+    fileInput.accept = ".json,application/json";
+    let profiles = [];
+    let loaded = false;
+    let busy = false;
+    let active = true;
+    let revision = null;
+    const panel = createImportPanel({ getProfiles: () => profiles, isActive: () => active,
+        onBusy: render, onReview: render, onClose: render });
+    root.append(header, note, actions, profileActions, fileInput, panel.root);
+    dialog.append(root);
+
+    function render() {
+        panel.setDisabled(busy);
+        importButton.disabled = busy || panel.busy;
+        exportAllButton.disabled = busy || panel.busy || !loaded;
+        profileSelect.disabled = exportProfileButton.disabled = busy || panel.busy || !profiles.length;
+    }
+
+    const controller = {
+        applyPayload(payload) {
+            if (!active || !Array.isArray(payload?.profiles) || !Array.isArray(payload.presets)) return;
+            if (revision?.storeId === payload.store_id && revision.revision > payload.revision) return;
+            revision = { storeId: payload.store_id, revision: payload.revision };
+            profiles = payload.profiles;
+            loaded = true;
+            const selected = profileSelect.value;
+            profileSelect.replaceChildren();
+            for (const profile of profiles) {
+                const option = element("option", "", profile.name);
+                option.value = profile.id;
+                profileSelect.append(option);
+            }
+            profileSelect.value = profiles.some((p) => p.id === selected) ? selected : profiles[0]?.id ?? "";
+            note.textContent = `Shared across all workflows: ${payload.presets.length} presets, ${profiles.length} profiles.`;
+            render();
+        },
+        async refresh({ quiet = false } = {}) {
+            if (!active || busy || panel.busy) return;
+            busy = true;
+            render();
+            try {
+                controller.applyPayload(await request("/simple-preset/presets"));
+            } catch (error) {
+                if (active && !quiet) showError(error.message || String(error));
+                if (active && !loaded) note.textContent = "Could not load the shared library. Close and reopen to retry.";
+            } finally {
+                busy = false;
+                if (active) render();
+            }
+        },
+    };
+
+    async function exportLibrary(profileId = null) {
+        if (!active || busy || panel.busy) return;
+        busy = true;
+        render();
+        try {
+            const query = profileId === null ? "" : `?profile_id=${encodeURIComponent(profileId)}`;
+            const result = await request(`/simple-preset/export${query}`);
+            if (active) downloadDocument(result, profileId === null ? "simple-preset-all.json" : "simple-preset-profile.json");
+        } catch (error) {
+            if (active) showError(error.message || String(error));
+        } finally {
+            busy = false;
+            if (active) render();
+        }
+    }
+
+    importButton.addEventListener("click", () => { fileInput.value = ""; fileInput.click(); });
+    fileInput.addEventListener("change", () => { if (fileInput.files?.[0]) panel.prepare(fileInput.files[0]); });
+    exportAllButton.addEventListener("click", () => exportLibrary());
+    exportProfileButton.addEventListener("click", () => exportLibrary(profileSelect.value));
+    done.addEventListener("click", () => dialog.close());
+    const observer = new MutationObserver(() => {
+        if (!dialog.isConnected) cleanup();
+    });
+    function cleanup() {
+        if (!active) return;
+        active = false;
+        observer.disconnect();
+        controllers.delete(controller);
+        panel.close();
+        dialog.remove();
+    }
+    dialog.addEventListener("close", cleanup);
+    // Native dialogs still enter the top layer here, while settings' outside-click
+    // detection recognizes their controls as descendants of the settings content.
+    host.append(dialog);
+    dialog.showModal();
+    observer.observe(document.body, { childList: true, subtree: true });
+    controllers.add(controller);
+    render();
+    controller.refresh();
+}
+
 function createPresetWidget(node, inputName, inputData) {
     installStyles();
     const root = element("div", "sp-root");
@@ -567,6 +872,9 @@ function createPresetWidget(node, inputName, inputData) {
     }, { capture: true });
     let profiles = [];
     let presets = [];
+    let sharedProfiles = [];
+    let sharedPresets = [];
+    let bundle = readBundle(inputData?.[1]?.default ?? "[]");
     let hasSnapshot = false;
     let selectedIds = parseSelection(inputData?.[1]?.default ?? "[]");
     const initialSeparator = separatorSettingValue();
@@ -747,11 +1055,29 @@ function createPresetWidget(node, inputName, inputData) {
     const missingNotice = element("div", "sp-missing-notice sp-hidden");
     missingNotice.setAttribute("role", "status");
     missingNotice.setAttribute("aria-live", "polite");
-    root.append(profileSection, header, toolbar, form, list, selectionNotice, missingNotice, summary);
+    const importPanel = createImportPanel({
+        getProfiles: () => sharedProfiles,
+        isActive: () => active,
+        onBusy: setLoading,
+        onReview: () => { closeForm(); closeProfileForm(); },
+        onClose: render,
+        beforeCommit: () => { syncToken += 1; },
+    });
+    root.append(profileSection, header, toolbar, form, importPanel.root,
+        list, selectionNotice, missingNotice, summary);
     const scrollRegion = { root, list, node };
     scrollRegions.add(scrollRegion);
 
     const selectedSet = () => new Set(selectedIds);
+    const isBundled = (id) => bundle?.presets.some((p) => p.id === id) ?? false;
+    function rebuildEffectiveData() {
+        presets = effectivePresets(sharedPresets, bundle);
+        profiles = effectiveProfiles(sharedProfiles, bundle);
+    }
+    function selectedBundle() {
+        const byId = new Map(presets.map((p) => [p.id, p]));
+        return makeBundle(profiles, selectedIds.map((id) => byId.get(id)).filter(Boolean));
+    }
     const profilePresets = () => {
         if (currentProfileId === ALL_PROFILES) return presets;
         return presets.filter((preset) => preset.profile_id === currentProfileId);
@@ -791,13 +1117,14 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     function rebuildPresetProfileOptions() {
-        const availableProfiles = new Set(profiles.map((profile) => profile.id));
+        const formProfiles = isBundled(editingId) ? profiles : sharedProfiles;
+        const availableProfiles = new Set(formProfiles.map((profile) => profile.id));
         if (!availableProfiles.has(presetFormProfileId)) {
             presetFormProfileId = availableProfiles.has(DEFAULT_PROFILE_ID)
                 ? DEFAULT_PROFILE_ID
-                : profiles[0]?.id ?? "";
+                : formProfiles[0]?.id ?? "";
         }
-        const choices = profiles.map((profile) => ({
+        const choices = formProfiles.map((profile) => ({
             id: profile.id,
             label: profile.name,
         }));
@@ -824,7 +1151,8 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     function selectPresetFormProfile(profileId) {
-        if (!profiles.some((profile) => profile.id === profileId)) return;
+        const formProfiles = isBundled(editingId) ? profiles : sharedProfiles;
+        if (!formProfiles.some((profile) => profile.id === profileId)) return;
         presetFormProfileId = profileId;
         presetProfileMenu.classList.add("sp-hidden");
         presetProfileButton.setAttribute("aria-expanded", "false");
@@ -846,6 +1174,9 @@ function createPresetWidget(node, inputName, inputData) {
 
     function setSelection(nextIds) {
         selectedIds = parseSelection(nextIds);
+        if (bundle) bundle = makeBundle(bundle.profiles, bundle.presets.filter((p) => selectedIds.includes(p.id)));
+        rebuildEffectiveData();
+        rebuildProfileOptions();
         markChanged();
         render();
     }
@@ -870,12 +1201,13 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     function openForm(preset = null) {
+        closeImport();
         editingProfileId = null;
         profileFormVisible = false;
         profileNameInput.value = "";
         editingId = preset?.id ?? null;
         formVisible = true;
-        formTitle.textContent = preset ? "Edit preset" : "Add preset";
+        formTitle.textContent = preset ? (isBundled(preset.id) ? "Edit workflow preset" : "Edit preset") : "Add preset";
         nameInput.value = preset?.name ?? "";
         promptInput.value = preset?.prompt ?? "";
         presetFormProfileId = preset?.profile_id
@@ -900,6 +1232,7 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     function openProfileForm(profile = null) {
+        closeImport();
         editingId = null;
         formVisible = false;
         nameInput.value = "";
@@ -952,6 +1285,16 @@ function createPresetWidget(node, inputName, inputData) {
             return;
         }
         nameInput.setCustomValidity("");
+        if (editingId && isBundled(editingId)) {
+            bundle.presets = bundle.presets.map((p) => p.id === editingId
+                ? { ...p, name, prompt, profile_id: presetFormProfileId, updated_at: new Date().toISOString() } : p);
+            bundle = makeBundle(profiles, bundle.presets);
+            rebuildEffectiveData();
+            rebuildProfileOptions();
+            markChanged();
+            closeForm();
+            return;
+        }
         const path = editingId
             ? `/simple-preset/presets/${encodeURIComponent(editingId)}`
             : "/simple-preset/presets";
@@ -995,6 +1338,10 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     async function removePreset(preset) {
+        if (isBundled(preset.id)) {
+            setSelection(selectedIds.filter((id) => id !== preset.id));
+            return;
+        }
         if (!await confirmDelete(preset.name)) return;
         await mutate(`/simple-preset/presets/${encodeURIComponent(preset.id)}`, {
             method: "DELETE",
@@ -1009,6 +1356,10 @@ function createPresetWidget(node, inputName, inputData) {
             { method: "DELETE" },
         );
         if (payload) closeProfileForm();
+    }
+
+    function closeImport() {
+        importPanel.close();
     }
 
     function updateSortControls() {
@@ -1030,7 +1381,7 @@ function createPresetWidget(node, inputName, inputData) {
         if (!key || loading || !active) return;
         sortKey = key;
         updateSortControls();
-        const scoped = profilePresets();
+        const scoped = sharedPresets.filter((p) => currentProfileId === ALL_PROFILES || p.profile_id === currentProfileId);
         if (scoped.length < 2) return;
 
         const multiplier = sortDirectionValue === "asc" ? 1 : -1;
@@ -1039,9 +1390,9 @@ function createPresetWidget(node, inputName, inputData) {
             .map((preset) => preset.id);
         const scopedIds = new Set(sorted);
         let sortedIndex = 0;
-        const ids = presets.map((preset) => scopedIds.has(preset.id)
+        const ids = sharedPresets.map((preset) => scopedIds.has(preset.id)
             ? sorted[sortedIndex++] : preset.id);
-        if (ids.every((id, index) => id === presets[index].id)) return;
+        if (ids.every((id, index) => id === sharedPresets[index].id)) return;
         await mutate("/simple-preset/order", {
             method: "POST",
             body: JSON.stringify({ ids }),
@@ -1056,26 +1407,28 @@ function createPresetWidget(node, inputName, inputData) {
         separatorButton.setAttribute("aria-label", `Separator: ${separatorLabel}. Click to cycle.`);
         summary.classList.remove("sp-drag-active");
         root.classList.toggle("sp-form-open", formVisible);
+        root.classList.toggle("sp-transfer-open", importPanel.visible);
+        importPanel.setDisabled(loading);
         form.classList.toggle("sp-hidden", !formVisible);
         presetProfileField.classList.toggle("sp-hidden", !editingId);
         profileForm.classList.toggle("sp-hidden", !profileFormVisible);
         const selected = selectedSet();
         const presetsById = new Map(presets.map((preset) => [preset.id, preset]));
-        const missingIds = hasSnapshot ? selectedIds.filter((id) => !presetsById.has(id)) : [];
+        const missingIds = hasSnapshot || bundle ? selectedIds.filter((id) => !presetsById.has(id)) : [];
         const scoped = profilePresets();
+        const sortable = sharedPresets.filter((p) => currentProfileId === ALL_PROFILES || p.profile_id === currentProfileId);
         const visible = visiblePresets();
         const selectedInProfile = scoped.filter((preset) => selected.has(preset.id)).length;
         const selectedOutsideProfile = presets.filter((preset) => selected.has(preset.id)).length
             - selectedInProfile;
         const currentProfile = profiles.find((profile) => profile.id === currentProfileId);
         const canEditCurrentProfile = Boolean(currentProfile)
+            && sharedProfiles.some((p) => p.id === currentProfileId)
             && currentProfile.id !== DEFAULT_PROFILE_ID;
-        const canDeleteCurrentProfile = Boolean(currentProfile)
-            && currentProfile.id !== DEFAULT_PROFILE_ID
-            && profiles.length > 1;
+        const canDeleteCurrentProfile = canEditCurrentProfile && sharedProfiles.length > 1;
         count.textContent = `${selectedInProfile} / ${scoped.length}`;
         count.title = `${selected.size} selected across all profiles`;
-        const canAddPreset = currentProfileId !== ALL_PROFILES;
+        const canAddPreset = sharedProfiles.some((p) => p.id === currentProfileId);
         addButton.disabled = loading || !canAddPreset;
         const addPresetTitle = canAddPreset
             ? "Add preset to current profile"
@@ -1110,20 +1463,20 @@ function createPresetWidget(node, inputName, inputData) {
             ? selected.size === 0 : selectedInProfile === 0);
         selectAllButton.disabled = loading || visible.length === 0
             || visible.every((preset) => selected.has(preset.id));
-        sortButton.disabled = loading || scoped.length < 2;
-        sortByNameButton.disabled = loading || scoped.length < 2;
-        sortByPromptButton.disabled = loading || scoped.length < 2;
-        sortByCreatedButton.disabled = loading || scoped.length < 2;
-        sortByUpdatedButton.disabled = loading || scoped.length < 2;
-        ascendingButton.disabled = loading || scoped.length < 2;
-        descendingButton.disabled = loading || scoped.length < 2;
+        sortButton.disabled = loading || sortable.length < 2;
+        sortByNameButton.disabled = loading || sortable.length < 2;
+        sortByPromptButton.disabled = loading || sortable.length < 2;
+        sortByCreatedButton.disabled = loading || sortable.length < 2;
+        sortByUpdatedButton.disabled = loading || sortable.length < 2;
+        ascendingButton.disabled = loading || sortable.length < 2;
+        descendingButton.disabled = loading || sortable.length < 2;
         if (loading) {
             profileMenu.classList.add("sp-hidden");
             profileButton.setAttribute("aria-expanded", "false");
             presetProfileMenu.classList.add("sp-hidden");
             presetProfileButton.setAttribute("aria-expanded", "false");
         }
-        if (scoped.length < 2 || loading) {
+        if (sortable.length < 2 || loading) {
             sortMenu.classList.add("sp-hidden");
             sortButton.setAttribute("aria-expanded", "false");
         }
@@ -1157,13 +1510,14 @@ function createPresetWidget(node, inputName, inputData) {
                 const order = element("span", "sp-order", String(index + 1));
                 const copy = element("div", "sp-copy");
                 const presetName = element("div", "sp-name", preset.name);
+                if (isBundled(preset.id)) presetName.append(element("span", "sp-workflow-badge", "Workflow"));
                 const presetPrompt = element("div", "sp-prompt", preset.prompt || "(Empty prompt)");
                 presetName.title = preset.name;
                 presetPrompt.title = preset.prompt;
                 copy.append(presetName, presetPrompt);
                 const actions = element("div", "sp-actions");
                 const edit = iconButton("edit", "Edit preset");
-                const remove = iconButton("delete", "Delete preset", "sp-icon-button sp-danger");
+                const remove = iconButton("delete", isBundled(preset.id) ? "Remove from workflow" : "Delete preset", "sp-icon-button sp-danger");
                 edit.disabled = loading;
                 remove.disabled = loading;
                 actions.append(edit, remove);
@@ -1192,7 +1546,7 @@ function createPresetWidget(node, inputName, inputData) {
         } else {
             for (const [index, presetId] of selectedIds.entries()) {
                 const preset = presetsById.get(presetId);
-                const missing = hasSnapshot && !preset;
+                const missing = (hasSnapshot || Boolean(bundle)) && !preset;
                 const label = preset?.name ?? `${missing ? "Missing" : "Unresolved"}: ${presetId.slice(0, 8)}`;
                 const chip = element("button", `sp-preset-chip${missing ? " sp-missing" : ""}`);
                 if (missing) {
@@ -1279,17 +1633,18 @@ function createPresetWidget(node, inputName, inputData) {
             const nextProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
             const nextPresets = payload.presets;
             const dataChanged = !hasSnapshot || !samePresetData(
-                profiles,
-                presets,
+                sharedProfiles,
+                sharedPresets,
                 nextProfiles,
                 nextPresets,
             );
             if (!dataChanged) return;
 
             hasSnapshot = true;
-            profiles = nextProfiles;
-            presets = nextPresets;
+            sharedProfiles = nextProfiles;
+            sharedPresets = nextPresets;
             syncToken += 1;
+            rebuildEffectiveData();
             rebuildProfileOptions();
             render();
         },
@@ -1313,6 +1668,50 @@ function createPresetWidget(node, inputName, inputData) {
     };
     controllers.add(controller);
 
+    const previousMenu = node.getExtraMenuOptions;
+    node.getExtraMenuOptions = function (canvas, options) {
+        const result = previousMenu?.call(this, canvas, options);
+        if (!active) return result;
+        options.push(null, {
+            content: "Simple Preset",
+            submenu: { options: [
+                {
+                    content: "Export selected presets",
+                    disabled: loading || !selectedIds.length,
+                    callback: () => {
+                        if (!active || loading || !selectedIds.length) return;
+                        const document = selectedBundle();
+                        if (document.presets.length !== selectedIds.length) {
+                            showError("Restore or remove missing selections before exporting.");
+                            return;
+                        }
+                        downloadDocument(document, "simple-preset-selected.json");
+                    },
+                },
+                {
+                    content: "Save workflow presets to library",
+                    disabled: loading || !bundle?.presets.length,
+                    callback: () => {
+                        if (active && !loading && bundle?.presets.length) importPanel.prepare(selectedBundle());
+                    },
+                },
+                {
+                    content: "Use shared versions",
+                    disabled: loading || !bundle?.presets.some((p) => sharedPresets.some((s) => s.id === p.id)),
+                    callback: () => {
+                        if (!active || loading || !bundle) return;
+                        const available = new Set(sharedPresets.map((p) => p.id));
+                        bundle = makeBundle(bundle.profiles, bundle.presets.filter((p) => !available.has(p.id)));
+                        rebuildEffectiveData();
+                        rebuildProfileOptions();
+                        markChanged();
+                        render();
+                    },
+                },
+            ] },
+        });
+        return result;
+    };
     separatorButton.addEventListener("click", () => {
         separator = nextSeparator(separator);
         markChanged();
@@ -1403,11 +1802,15 @@ function createPresetWidget(node, inputName, inputData) {
 
     widget = node.addDOMWidget(inputName, "simple_preset_selection", root, {
         serialize: true,
-        getValue: () => selectionValue(selectedIds, separator),
+        getValue: () => selectionValue(selectedIds, separator, selectedBundle()),
         setValue: (value) => {
+            const nextBundle = readBundle(value);
             selectedIds = parseSelection(value);
+            bundle = nextBundle ? makeBundle(nextBundle.profiles,
+                nextBundle.presets.filter((p) => selectedIds.includes(p.id))) : null;
             separator = selectionSeparator(value, initialSeparator);
             currentProfileId = storedProfileId(node);
+            rebuildEffectiveData();
             if (profiles.length) {
                 rebuildProfileOptions();
             }
@@ -1419,12 +1822,13 @@ function createPresetWidget(node, inputName, inputData) {
         hideOnZoom: false,
         socketless: true,
     });
-    widget.serializeValue = () => selectionValue(selectedIds, separator);
+    widget.serializeValue = () => selectionValue(selectedIds, separator, selectedBundle());
     widget.computeSize = (width) => [width, 480];
 
     function deactivate() {
         active = false;
         activation += 1;
+        importPanel.close();
         syncToken += 1;
         setLoading(false);
         controllers.delete(controller);
@@ -1461,6 +1865,7 @@ function createPresetWidget(node, inputName, inputData) {
         return result;
     };
 
+    rebuildEffectiveData();
     render();
     controller.refresh();
     return { widget };
@@ -1473,6 +1878,14 @@ channel?.addEventListener("message", (event) => {
 app.registerExtension({
     name: "simple-preset.manager",
     settings: [
+        {
+            id: "SimplePreset.Library.Manage",
+            name: "Preset library",
+            type: createLibrarySetting,
+            defaultValue: null,
+            category: ["Simple Preset", "Preset library", "Manage presets"],
+            tooltip: "Import JSON and export the shared library or individual profiles.",
+        },
         {
             id: SEPARATOR_SETTING_ID,
             name: "Default preset separator",

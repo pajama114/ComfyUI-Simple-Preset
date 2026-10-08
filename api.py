@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .preset_store import (
     PRESET_STORE,
+    PresetImportConflictError,
     PresetNotFoundError,
     PresetValidationError,
     ProfileNotFoundError,
@@ -46,6 +47,8 @@ def register_routes() -> bool:
         return payload
 
     def error_response(error):
+        if isinstance(error, PresetImportConflictError):
+            return web.json_response({"error": str(error), "preview": error.preview}, status=409)
         if isinstance(error, OSError):
             detail = error.strerror or str(error)
             return web.json_response(
@@ -146,6 +149,35 @@ def register_routes() -> bool:
             notify_clients(result)
             return web.json_response(result)
         except (PresetValidationError, ProfileNotFoundError, OSError) as error:
+            return error_response(error)
+
+    @routes.get("/simple-preset/export")
+    async def export_presets(request):
+        try:
+            return web.json_response(PRESET_STORE.export_document(request.query.get("profile_id")))
+        except (PresetValidationError, ProfileNotFoundError, OSError) as error:
+            return error_response(error)
+
+    @routes.post("/simple-preset/import/preview")
+    async def preview_import(request):
+        try:
+            payload = await read_json(request)
+            return web.json_response(PRESET_STORE.preview_import(payload.get("document")))
+        except (PresetValidationError, OSError) as error:
+            return error_response(error)
+
+    @routes.post("/simple-preset/import")
+    async def import_presets(request):
+        try:
+            payload = await read_json(request)
+            summary = PRESET_STORE.import_document(
+                payload.get("document"), payload.get("resolutions"), payload.get("expected")
+            )
+            result = response_payload()
+            result["import_result"] = summary
+            notify_clients(result)
+            return web.json_response(result)
+        except (PresetValidationError, OSError) as error:
             return error_response(error)
 
     PromptServer.instance._simple_preset_routes_registered = True

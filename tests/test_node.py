@@ -161,6 +161,9 @@ assert module.WEB_DIRECTORY == './web'
                 ("POST", "/simple-preset/profiles"),
                 ("PUT", "/simple-preset/profiles/{profile_id}"),
                 ("DELETE", "/simple-preset/profiles/{profile_id}"),
+                ("GET", "/simple-preset/export"),
+                ("POST", "/simple-preset/import/preview"),
+                ("POST", "/simple-preset/import"),
             ],
         )
 

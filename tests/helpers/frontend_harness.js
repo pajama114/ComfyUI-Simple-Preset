@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import * as profileState from "../../web/profile_state.js";
 import * as separatorState from "../../web/separator_state.js";
+import * as transferState from "../../web/transfer_state.js";
 
 // Exercise the actual extension with the DOM and ComfyUI boundary stubbed out.
 class Element {
@@ -45,8 +46,8 @@ class Element {
         this.children = [];
         this.append(...children);
     }
-    set textContent(value) { this.text = String(value); }
-    get textContent() { return this.text ?? this.children.map((child) => child.textContent).join(""); }
+    set textContent(value) { this.text = String(value); this.children = []; }
+    get textContent() { return (this.text ?? "") + this.children.map((child) => child.textContent).join(""); }
     setAttribute(name, value) { this.attributes.set(name, String(value)); }
     getAttribute(name) { return this.attributes.get(name); }
     addEventListener(name, callback) {
@@ -77,6 +78,18 @@ class Element {
     contains(target) { return target === this || this.children.some((child) => child.contains(target)); }
     getBoundingClientRect() { return this.rect ?? { left: 0, top: 0, right: 430, bottom: 480 }; }
     focus() {}
+    get isConnected() {
+        return this.tagName === "body" || this.tagName === "head" || (this.parentElement?.isConnected ?? false);
+    }
+    showModal() { this.open = true; }
+    close() { this.open = false; this.fire("close"); }
+    remove() {
+        let owner = this;
+        while (owner.parentElement) owner = owner.parentElement;
+        if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+        this.parentElement = null;
+        for (const observer of owner.mutationObservers ?? []) observer.callback();
+    }
     setCustomValidity(value) { this.validityMessage = value; }
     reportValidity() {}
 }
@@ -100,6 +113,8 @@ export function frontendHarness(initialPayload) {
     const api = new Element("api");
     const calls = [];
     const errors = [];
+    const notices = [];
+    const downloads = [];
     let fetch = async () => response(initialPayload);
     api.fetchApi = (path, options) => {
         calls.push({ path, options });
@@ -107,35 +122,57 @@ export function frontendHarness(initialPayload) {
     };
     const app = {
         extensionManager: {
-            toast: { add: (message) => errors.push(message.detail) },
+            toast: { add: (message) => {
+                notices.push(message);
+                if (message.severity === "error") errors.push(message.detail);
+            } },
             dialog: { confirm: async () => true },
             setting: { get: () => "newline" },
         },
         registerExtension(extension) { this.extension = extension; },
     };
     const head = new Element("head");
+    const body = new Element("body");
     const document = {
-        head,
+        head, body,
         getElementById: (id) => head.children.find((child) => child.id === id),
         createElement: (tag) => new Element(tag),
         createElementNS: (_namespace, tag) => new Element(tag),
     };
+    class MutationObserver {
+        constructor(callback) { this.callback = callback; }
+        observe(target) {
+            this.target = target;
+            target.mutationObservers ??= new Set();
+            target.mutationObservers.add(this);
+        }
+        disconnect() { this.target?.mutationObservers.delete(this); }
+    }
     const source = readFileSync(new URL("../../web/simple_preset.js", import.meta.url), "utf8")
         .replace(/^import[\s\S]*?from "[^"]+";\r?\n/gm, "");
     vm.runInNewContext(source, {
-        app, api, document, window, Element, Node: Element,
+        app, api, document, window, Element, Node: Element, MutationObserver,
         BroadcastChannel: undefined,
         requestAnimationFrame: (callback) => callback(),
-        ...profileState, ...separatorState,
+        ...profileState, ...separatorState, ...transferState,
+        downloadDocument: (document, filename) => downloads.push({ document, filename }),
     }, { filename: "web/simple_preset.js" });
     app.extension.setup();
     return {
-        app, api, window, calls, errors,
+        app, api, window, calls, errors, notices, downloads,
         setFetch(handler) { fetch = handler; },
         push(payload) { api.fire("simple_preset.changed", { detail: payload }); },
-        createNode(properties = {}, id = calls.length + 1) {
+        librarySetting() {
+            const setting = app.extension.settings.find((item) => item.id === "SimplePreset.Library.Manage");
+            const root = setting.type(setting.name, () => { throw new Error("Library actions must not save a setting value"); }, null);
+            body.append(root);
+            return root;
+        },
+        libraryDialog: () => body.querySelector("dialog"),
+        createNode(properties = {}, id = calls.length + 1, overrides = {}) {
             const node = {
                 id, properties,
+                ...overrides,
                 graph: { setDirtyCanvas() {} },
                 addDOMWidget(_name, _type, root, options) {
                     const widget = { root, options, onRemove() { this.removed = true; } };
@@ -150,10 +187,24 @@ export function frontendHarness(initialPayload) {
             return {
                 node, widget, root: widget.root,
                 button: (label) => widget.root.querySelectorAll("button")
-                    .find((button) => button.title === label || button.getAttribute("aria-label") === label),
+                    .find((button) => button.title === label || button.getAttribute("aria-label") === label
+                        || button.textContent === label),
                 rows: () => widget.root.querySelectorAll(".sp-row"),
                 selection: () => JSON.parse(widget.value).ids,
                 separator: () => JSON.parse(widget.value).separator,
+                menu: () => {
+                    const options = [];
+                    node.getExtraMenuOptions?.(app.canvas, options);
+                    return options;
+                },
+                menuAction: (label) => {
+                    const options = [];
+                    node.getExtraMenuOptions?.(app.canvas, options);
+                    const option = options.find((item) => item?.content === "Simple Preset")
+                        ?.submenu.options.find((item) => item.content === label);
+                    if (!option) throw new Error(`Menu action missing: ${label}`);
+                    if (!option.disabled) return option.callback();
+                },
             };
         },
     };

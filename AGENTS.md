@@ -13,8 +13,12 @@ current ComfyUI custom-node conventions.
 - Allow multiple presets to be selected.
 - Join the selected preset prompts in their displayed order.
 - Store all presets in one shared JSON file so they are available across workflows.
-- Store only the selected preset state in each workflow; do not duplicate the
-  shared preset contents in workflow JSON.
+- Embed snapshots of selected presets and their separator in each workflow so
+  it runs on another installation. Unselected presets remain only in the shared
+  library. Embedded contents take priority until explicitly refreshed from the
+  library; loading a workflow must not automatically import its presets.
+- Support JSON export/import with preserved preset IDs, additive merging, and
+  explicit keep/update choices for conflicting preset contents.
 
 ## Expected structure
 

@@ -18,7 +18,7 @@ test("profile labels target their own control before ComfyUI assigns node ids", 
     assert.equal(second.root.querySelector(".sp-profile-label").htmlFor, secondButton.id);
 });
 
-test("workflow selections and separators round-trip independently without storing shared content", async () => {
+test("workflows round-trip independent selections and bundle only their selected presets", async () => {
     const harness = frontendHarness(payload([preset("a", "A"), preset("b", "B")]));
     const first = harness.createNode();
     const second = harness.createNode();
@@ -27,7 +27,11 @@ test("workflow selections and separators round-trip independently without storin
     await flush();
     assert.deepEqual(first.selection(), ["b", "a"]);
     assert.deepEqual(second.selection(), ["a"]);
-    assert.deepEqual(JSON.parse(first.widget.value), { ids: ["b", "a"], separator: "period" });
+    const saved = JSON.parse(first.widget.value);
+    assert.deepEqual(saved.ids, ["b", "a"]);
+    assert.equal(saved.separator, "period");
+    assert.deepEqual(saved.bundle.presets, [preset("b", "B"), preset("a", "A")]);
+    assert.deepEqual(JSON.parse(second.widget.value).bundle.presets, [preset("a", "A")]);
     assert.equal(first.widget.serializeValue(), first.widget.value);
     const restored = harness.createNode();
     restored.widget.value = first.widget.value;
@@ -37,6 +41,7 @@ test("workflow selections and separators round-trip independently without storin
     harness.push(payload([preset("a", "Renamed"), preset("b", "B")], 2));
     assert.equal(first.root.querySelector(".sp-preset-chip").textContent, "B");
     assert.equal(second.root.querySelector(".sp-preset-chip").textContent, "Renamed");
+    assert.deepEqual(restored.root.querySelectorAll(".sp-preset-chip").map((chip) => chip.textContent), ["B", "A"]);
     assert.equal(first.separator(), "period");
     assert.equal(second.separator(), "comma");
 });
@@ -72,7 +77,10 @@ test("the separator button sits before reload and cycles locally without changin
         assert.equal(first.separator(), value);
         assert.ok(button.title.includes(`Separator: ${name}`));
         assert.match(button.getAttribute("aria-label"), /Click to cycle/);
-        assert.deepEqual(JSON.parse(first.widget.serializeValue()), { ids: ["a"], separator: value });
+        const saved = JSON.parse(first.widget.serializeValue());
+        assert.deepEqual(saved.ids, ["a"]);
+        assert.equal(saved.separator, value);
+        assert.deepEqual(saved.bundle.presets, [preset("a", "A")]);
         button.click();
     }
     assert.equal(first.separator(), "comma");
@@ -85,6 +93,7 @@ test("global separator changes affect only newly created nodes", async () => {
     const harness = frontendHarness(payload([preset("a", "A")]));
     harness.app.extensionManager.setting.get = () => "comma";
     const existing = harness.createNode();
+    await flush();
     existing.widget.value = '["a"]';
     const saved = existing.widget.value;
     harness.app.extensionManager.setting.get = () => "period";
@@ -361,7 +370,7 @@ test("sorting a profile preserves the order and positions of other profiles", as
         const ids = JSON.parse(options.body).ids;
         return response(payload(ids.map((id) => initial.find((item) => item.id === id)), 2));
     });
-    node.root.querySelectorAll(".sp-sort-option")[0].click();
+    node.root.querySelector(".sp-sort-control").querySelectorAll(".sp-sort-option")[0].click();
     await flush();
     const order = harness.calls.find((call) => call.path === "/simple-preset/order");
     assert.deepEqual(JSON.parse(order.options.body).ids, ["a", "outside-z", "z", "outside-a"]);

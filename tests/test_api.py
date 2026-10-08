@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_node import package
+from test_transfer import document, expected, preset
 
 PresetStore = sys.modules[f"{package.__name__}.preset_store"].PresetStore
 
@@ -143,3 +144,67 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/simple-preset/presets", json={"name": "x", "prompt": "saved"})
         self.assertEqual(response.status, 201)
         self.assertEqual(PresetStore(self.path).list()[0]["prompt"], "saved")
+
+    async def test_export_and_additive_import_preview_then_commit(self):
+        old = self.store.create("Local", "one")
+        profile = self.store.create_profile("Photo")
+        incoming = document(preset("foreign", "持ち込み", profile_id="photo"),
+                            profiles=[{"id": "photo", "name": "Photo"}])
+        response = await self.client.post("/simple-preset/import/preview", json={"document": incoming})
+        self.assertEqual(response.status, 200)
+        preview = await response.json()
+        self.assertEqual(preview["added"][0]["profile_id"], profile["id"])
+        self.assertEqual(self.store.list(), [old])
+        self.assertEqual(self.messages, [])
+        response = await self.client.post("/simple-preset/import", json={
+            "document": incoming, "resolutions": {}, "expected": expected(preview),
+        })
+        self.assertEqual(response.status, 200)
+        result = await response.json()
+        self.assertEqual(result["import_result"]["added"], 1)
+        self.assertEqual([p["id"] for p in result["presets"]], [old["id"], "foreign"])
+        self.assertEqual(self.messages, [("simple_preset.changed", result)])
+        response = await self.client.get("/simple-preset/export")
+        full = await response.json()
+        self.assertEqual(full, self.store.export_document())
+        response = await self.client.get("/simple-preset/export", params={"profile_id": profile["id"]})
+        scoped = await response.json()
+        self.assertEqual([p["id"] for p in scoped["presets"]], ["foreign"])
+        response = await self.client.get("/simple-preset/export?profile_id=missing")
+        self.assertEqual(response.status, 404)
+
+    async def test_import_conflicts_and_stale_reviews_return_409_with_fresh_preview(self):
+        self.store.import_document(document(preset("a", "existing")))
+        incoming = document(preset("a", "imported"))
+        response = await self.client.post("/simple-preset/import", json={"document": incoming})
+        self.assertEqual(response.status, 409)
+        preview = (await response.json())["preview"]
+        self.assertEqual(preview["conflicts"][0]["existing"]["prompt"], "existing")
+        self.store.update("a", "Example", "edited during review")
+        response = await self.client.post("/simple-preset/import", json={
+            "document": incoming, "resolutions": {"a": "overwrite"}, "expected": expected(preview),
+        })
+        self.assertEqual(response.status, 409)
+        fresh = (await response.json())["preview"]
+        self.assertEqual(fresh["conflicts"][0]["existing"]["prompt"], "edited during review")
+        self.assertEqual(self.messages, [])
+        response = await self.client.post("/simple-preset/import", json={
+            "document": incoming, "resolutions": {"a": "overwrite"}, "expected": expected(fresh),
+        })
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["import_result"]["updated"], 1)
+        self.assertEqual(self.store.list()[0]["prompt"], "imported")
+        self.assertEqual(len(self.messages), 1)
+
+    async def test_invalid_import_and_failed_disk_write_do_not_commit_or_broadcast(self):
+        before = self.store.snapshot()
+        for route in ("/simple-preset/import/preview", "/simple-preset/import"):
+            for payload in ({}, {"document": []}, {"document": document(preset("a", "\ud800"))}):
+                response = await self.client.post(route, json=payload)
+                self.assertEqual(response.status, 400)
+                self.assertIn("error", await response.json())
+        with patch.object(sys.modules[PresetStore.__module__].os, "replace", side_effect=OSError("disk full")):
+            response = await self.client.post("/simple-preset/import", json={"document": document(preset("a", "one"))})
+        self.assertEqual(response.status, 500)
+        self.assertEqual(self.store.snapshot(), before)
+        self.assertEqual(self.messages, [])

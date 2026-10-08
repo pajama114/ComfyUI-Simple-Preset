@@ -18,6 +18,14 @@ class PresetValidationError(ValueError):
     """Raised when preset data is invalid."""
 
 
+class PresetImportConflictError(PresetValidationError):
+    """An import needs review before it can be committed."""
+
+    def __init__(self, message: str, preview: dict):
+        super().__init__(message)
+        self.preview = preview
+
+
 class PresetNotFoundError(KeyError):
     """Raised when a requested preset does not exist."""
 
@@ -149,7 +157,7 @@ class PresetStore:
 
     @classmethod
     def _validate_document(
-        cls, document: object
+        cls, document: object, *, portable: bool = False
     ) -> tuple[list[dict[str, str]], list[dict[str, str]], bool]:
         if not isinstance(document, dict):
             raise PresetValidationError("Preset JSON root must be an object.")
@@ -179,7 +187,7 @@ class PresetStore:
                 raise PresetValidationError("Every profile must have a unique string id.")
             name = cls._validate_profile_name(raw_profile.get("name"))
             normalized_name = name.casefold()
-            if normalized_name in profile_names:
+            if normalized_name in profile_names and not portable:
                 raise PresetValidationError("Profile names must be unique.")
             profile_ids.add(profile_id)
             cls._validate_utf8(profile_id)
@@ -332,6 +340,119 @@ class PresetStore:
                 "presets": deepcopy(self._presets),
                 "store_id": self._store_id,
                 "revision": self._revision,
+            }
+
+    def export_document(self, profile_id: str | None = None) -> dict:
+        with self._lock:
+            self._reload_if_changed()
+            if profile_id is not None:
+                self._validated_profile_id(profile_id)
+            presets = [
+                preset for preset in self._presets
+                if profile_id is None or preset["profile_id"] == profile_id
+            ]
+            profiles = [
+                profile for profile in self._profiles
+                if profile_id is None or profile["id"] in (self.DEFAULT_PROFILE_ID, profile_id)
+            ]
+            return deepcopy({"version": self.VERSION, "profiles": profiles, "presets": presets})
+
+    @staticmethod
+    def _preset_content(preset: dict) -> tuple:
+        return (preset["name"], preset["prompt"], preset["profile_id"])
+
+    def _prepare_import(self, document: object) -> tuple[dict, list, list]:
+        profiles, presets, _ = self._validate_document(document, portable=True)
+        profiles_by_id = {p["id"]: p for p in self._profiles}
+        profiles_by_name = {p["name"].casefold(): p for p in self._profiles}
+        profile_map, added_profiles = {}, []
+        for profile in profiles:
+            existing = profiles_by_id.get(profile["id"]) or profiles_by_name.get(
+                profile["name"].casefold()
+            )
+            if existing:
+                profile_map[profile["id"]] = existing["id"]
+            else:
+                profile_map[profile["id"]] = profile["id"]
+                added_profiles.append(profile)
+                profiles_by_id[profile["id"]] = profile
+                profiles_by_name[profile["name"].casefold()] = profile
+        for preset in presets:
+            preset["profile_id"] = profile_map[preset["profile_id"]]
+        current = {p["id"]: p for p in self._presets}
+        added, unchanged, conflicts = [], [], []
+        for preset in presets:
+            existing = current.get(preset["id"])
+            if existing is None:
+                added.append(preset)
+            elif self._preset_content(existing) == self._preset_content(preset):
+                unchanged.append(preset["id"])
+            else:
+                conflicts.append({
+                    "id": preset["id"], "existing": deepcopy(existing), "incoming": preset,
+                })
+        if len(self._profiles) + len(added_profiles) > self.MAX_PROFILES:
+            raise PresetValidationError(f"Import would exceed {self.MAX_PROFILES} profiles.")
+        if len(self._presets) + len(added) > self.MAX_PRESETS:
+            raise PresetValidationError(f"Import would exceed {self.MAX_PRESETS} presets.")
+        preview = {
+            "store_id": self._store_id, "revision": self._revision,
+            "added": added, "unchanged": unchanged, "conflicts": conflicts,
+            "profiles_added": added_profiles,
+        }
+        return preview, added_profiles, presets
+
+    def preview_import(self, document: object) -> dict:
+        with self._lock:
+            self._reload_if_changed()
+            preview, _, _ = self._prepare_import(document)
+            return deepcopy(preview)
+
+    def import_document(
+        self, document: object, resolutions: object = None, expected: object = None
+    ) -> dict:
+        with self._transaction():
+            preview, added_profiles, presets = self._prepare_import(document)
+            if expected is not None:
+                if (
+                    not isinstance(expected, dict)
+                    or not isinstance(expected.get("store_id"), str)
+                    or type(expected.get("revision")) is not int
+                ):
+                    raise PresetValidationError("Import revision must include store_id and revision.")
+                if expected != {"store_id": self._store_id, "revision": self._revision}:
+                    raise PresetImportConflictError(
+                        "Shared presets changed. Review the updated import.", preview
+                    )
+            resolutions = {} if resolutions is None else resolutions
+            conflict_ids = {c["id"] for c in preview["conflicts"]}
+            if not isinstance(resolutions, dict) or any(
+                key not in conflict_ids or value not in ("keep", "overwrite")
+                for key, value in resolutions.items()
+            ):
+                raise PresetValidationError("Import choices must be keep or overwrite for conflicting IDs.")
+            if conflict_ids - resolutions.keys():
+                raise PresetImportConflictError(
+                    "Choose whether to keep or update each conflicting preset.", preview
+                )
+            by_id = {p["id"]: p for p in self._presets}
+            updated = 0
+            for preset in presets:
+                if preset["id"] not in by_id:
+                    self._presets.append(preset)
+                elif resolutions.get(preset["id"]) == "overwrite":
+                    by_id[preset["id"]].update(preset)
+                    updated += 1
+            self._profiles.extend(added_profiles)
+            added = len(preview["added"])
+            if added or updated or added_profiles:
+                self._validate_document({
+                    "version": self.VERSION, "profiles": self._profiles, "presets": self._presets,
+                })
+                self._write()
+            return {
+                "added": added, "updated": updated,
+                "skipped": len(presets) - added - updated, "profiles_added": len(added_profiles),
             }
 
     def _validated_profile_id(self, profile_id: object) -> str:
@@ -507,10 +628,27 @@ class PresetStore:
             return separator
         return cls.DEFAULT_SEPARATOR
 
+    def _resolve_selection(self, selected: object) -> tuple[list[str], dict, bool]:
+        selected_ids = self.parse_selection(selected)
+        if isinstance(selected, str):
+            try:
+                selected = json.loads(selected)
+            except (json.JSONDecodeError, TypeError):
+                selected = None
+        embedded = {}
+        if isinstance(selected, dict) and "bundle" in selected:
+            _, presets, _ = self._validate_document(selected["bundle"], portable=True)
+            embedded = {p["id"]: p for p in presets}
+        uses_shared = any(preset_id not in embedded for preset_id in selected_ids)
+        if uses_shared:
+            self._reload_if_changed()
+        by_id = {p["id"]: p for p in self._presets} if uses_shared else {}
+        by_id.update(embedded)
+        return selected_ids, by_id, uses_shared
+
     def join_selected(
         self, selected: object, separator: object | None = None
     ) -> str:
-        selected_ids = self.parse_selection(selected)
         normalized_separator = (
             self.selection_separator(selected)
             if separator is None
@@ -518,8 +656,7 @@ class PresetStore:
         )
         delimiter = self.SEPARATORS[normalized_separator]
         with self._lock:
-            self._reload_if_changed()
-            by_id = {preset["id"]: preset for preset in self._presets}
+            selected_ids, by_id, _ = self._resolve_selection(selected)
             missing_ids = [preset_id for preset_id in selected_ids if preset_id not in by_id]
             if missing_ids:
                 raise PresetValidationError(
@@ -548,16 +685,23 @@ class PresetStore:
 
     def change_token(
         self, selected: object, separator: object | None = None
-    ) -> tuple[tuple[int, int, str] | None, tuple[str, ...], str]:
-        selected_ids = tuple(self.parse_selection(selected))
+    ) -> tuple:
         normalized_separator = (
             self.selection_separator(selected)
             if separator is None
             else self.normalize_separator(separator)
         )
         with self._lock:
-            self._reload_if_changed()
-            return (self._file_signature, selected_ids, normalized_separator)
+            selected_ids, by_id, uses_shared = self._resolve_selection(selected)
+            contents = [
+                (preset_id, self._preset_content(by_id[preset_id]) if preset_id in by_id else None)
+                for preset_id in selected_ids
+            ]
+            digest = hashlib.sha256(json.dumps(contents, ensure_ascii=False).encode("utf-8")).hexdigest()
+            return (
+                self._file_signature if uses_shared else None,
+                tuple(selected_ids), normalized_separator, digest,
+            )
 
 
 PACKAGE_PRESET_FILE = Path(__file__).resolve().parent / "data" / "presets.json"

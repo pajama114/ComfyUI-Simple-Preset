@@ -35,10 +35,11 @@ export function selectionSeparator(value, fallback = DEFAULT_SEPARATOR) {
     }
 }
 
-export function selectionValue(selectedIds, separator) {
+export function selectionValue(selectedIds, separator, bundle) {
     return JSON.stringify({
         ids: selectedIds,
         separator: normalizeSeparator(separator),
+        ...(bundle ? { bundle } : {}),
     });
 }
 
