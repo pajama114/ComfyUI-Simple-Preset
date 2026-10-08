@@ -76,7 +76,7 @@ assert module.WEB_DIRECTORY == './web'
                 self.assertEqual(node.build_prompt(workflow_one), ("one\ntwo",))
                 self.assertEqual(node.build_prompt(workflow_two), ("two, one",))
                 before = node.IS_CHANGED(workflow_one)
-                store.update(first["id"], "First", "updated")
+                store.update(first["id"], {"prompt": "updated"}, {"prompt": "one"})
                 self.assertNotEqual(node.IS_CHANGED(workflow_one), before)
                 self.assertEqual(node.build_prompt(workflow_one), ("updated\ntwo",))
                 self.assertEqual(node.build_prompt(workflow_two), ("two, updated",))

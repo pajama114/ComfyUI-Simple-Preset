@@ -19,6 +19,7 @@ profile names and prompt text support Unicode, including Japanese.
 - Portable workflows with selected preset contents and their separator included
 - JSON export/import with preserved preset IDs and a conflict review
 - Live refresh across nodes and open browser tabs
+- Save only changed preset fields, with a review when the same field was edited elsewhere
 
 ## Install
 
@@ -51,6 +52,14 @@ open. Saving captures their current contents; reopening the saved workflow uses
 those captured versions. **Use shared versions** in the node's right-click menu
 switches selected presets back to the available library versions. Bundled
 presets that have no matching library ID are retained.
+
+Shared preset edits save only the fields you changed: name, prompt, or profile.
+Edits to different fields from two tabs are combined. If a field you changed was
+also changed elsewhere, saving stops and your draft stays in the editor. Compare
+the latest value with your changes, choose **Use latest** or **Keep my changes**
+for each conflicting field, then save again. Saving checks for further changes
+each time; no fields are saved until all conflicts are resolved. Identical edits
+do not conflict. Bundled workflow presets are edited locally as described above.
 
 Older workflows containing only IDs still use the shared library. Open and save
 them once while their selected presets are available to make them portable.

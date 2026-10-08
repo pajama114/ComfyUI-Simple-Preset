@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .preset_store import (
     PRESET_STORE,
+    PresetEditConflictError,
     PresetImportConflictError,
     PresetNotFoundError,
     PresetValidationError,
@@ -47,6 +48,11 @@ def register_routes() -> bool:
         return payload
 
     def error_response(error):
+        if isinstance(error, PresetEditConflictError):
+            return web.json_response({
+                "error": str(error), "current": error.current,
+                "fields": error.fields, "snapshot": error.snapshot,
+            }, status=409)
         if isinstance(error, PresetImportConflictError):
             return web.json_response({"error": str(error), "preview": error.preview}, status=409)
         if isinstance(error, OSError):
@@ -86,9 +92,8 @@ def register_routes() -> bool:
             payload = await read_json(request)
             PRESET_STORE.update(
                 request.match_info["preset_id"],
-                payload.get("name"),
-                payload.get("prompt"),
-                payload.get("profile_id"),
+                payload.get("changes"),
+                payload.get("expected"),
             )
             result = response_payload()
             notify_clients(result)

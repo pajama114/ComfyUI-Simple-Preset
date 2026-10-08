@@ -59,7 +59,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 201)
             ids.append((await response.json())["presets"][-1]["id"])
         response = await self.client.put(f"/simple-preset/presets/{ids[0]}", json={
-            "name": "Updated", "prompt": "changed",
+            "changes": {"name": "Updated", "prompt": "changed"},
+            "expected": {"name": "First", "prompt": "one"},
         })
         self.assertEqual(response.status, 200)
         self.assertEqual((await response.json())["presets"][0]["profile_id"], profile_id)
@@ -101,6 +102,56 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 400)
         self.assertIn("error", await response.json())
         self.assertEqual(self.store.list(), [])
+        self.assertEqual(self.messages, [])
+
+    async def test_field_edits_merge_across_tabs_and_conflicts_do_not_broadcast_or_partially_save(self):
+        original = self.store.create("Before", "old")
+        path = f"/simple-preset/presets/{original['id']}"
+        response = await self.client.put(path, json={
+            "changes": {"prompt": "from A"}, "expected": {"prompt": "old"},
+        })
+        self.assertEqual(response.status, 200)
+        response = await self.client.put(path, json={
+            "changes": {"name": "from B"}, "expected": {"name": "Before"},
+        })
+        self.assertEqual(response.status, 200)
+        merged = (await response.json())["presets"][0]
+        self.assertEqual((merged["name"], merged["prompt"]), ("from B", "from A"))
+        before = self.store.snapshot()
+        disk_before = self.path.read_bytes()
+        response = await self.client.put(path, json={
+            "changes": {"name": "unsaved", "prompt": "from B"},
+            "expected": {"name": "from B", "prompt": "old"},
+        })
+        self.assertEqual(response.status, 409)
+        conflict = await response.json()
+        self.assertEqual(conflict["fields"], ["prompt"])
+        self.assertEqual(conflict["current"], merged)
+        self.assertEqual(conflict["snapshot"], before)
+        self.assertEqual(self.store.snapshot(), before)
+        self.assertEqual(self.path.read_bytes(), disk_before)
+        self.assertEqual(len(self.messages), 2)
+        response = await self.client.put(path, json={
+            "changes": {"prompt": "from B"}, "expected": {"prompt": "from A"},
+        })
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["presets"][0]["prompt"], "from B")
+        self.assertEqual(len(self.messages), 3)
+
+    async def test_field_edits_require_original_values_for_all_changed_fields(self):
+        original = self.store.create("Before", "old")
+        path = f"/simple-preset/presets/{original['id']}"
+        for payload in (
+            {"name": "Renamed", "prompt": "new"},
+            {"changes": {"name": "Renamed"}},
+            {"changes": {"name": "Renamed"}, "expected": {}},
+            {"changes": {"updated_at": "fake"}, "expected": {"updated_at": original["updated_at"]}},
+        ):
+            with self.subTest(payload=payload):
+                response = await self.client.put(path, json=payload)
+                self.assertEqual(response.status, 400)
+                self.assertIn("error", await response.json())
+        self.assertEqual(self.store.list(), [original])
         self.assertEqual(self.messages, [])
 
     async def test_missing_resources_return_404(self):
@@ -180,7 +231,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 409)
         preview = (await response.json())["preview"]
         self.assertEqual(preview["conflicts"][0]["existing"]["prompt"], "existing")
-        self.store.update("a", "Example", "edited during review")
+        self.store.update("a", {"prompt": "edited during review"}, {"prompt": "existing"})
         response = await self.client.post("/simple-preset/import", json={
             "document": incoming, "resolutions": {"a": "overwrite"}, "expected": expected(preview),
         })

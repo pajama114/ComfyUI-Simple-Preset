@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from preset_store import (
+    PresetEditConflictError,
     PresetNotFoundError,
     PresetStore,
     PresetValidationError,
@@ -32,7 +33,8 @@ class PresetStoreTests(unittest.TestCase):
         first = self.store.create("Quality", "masterpiece")
         second = self.store.create("Lighting", "soft light")
 
-        updated = self.store.update(first["id"], "High quality", "best quality")
+        updated = self.store.update(first["id"], {"name": "High quality", "prompt": "best quality"},
+                                    {"name": first["name"], "prompt": first["prompt"]})
         self.assertEqual(updated["name"], "High quality")
         self.assertEqual(PresetStore(self.path).list(), [updated, second])
 
@@ -46,7 +48,7 @@ class PresetStoreTests(unittest.TestCase):
         updated_at = "2026-02-03T04:05:06.000000Z"
         with patch.object(PresetStore, "_timestamp", side_effect=[created_at, updated_at]):
             preset = self.store.create("Timed", "before")
-            edited = self.store.update(preset["id"], "Timed", "after")
+            edited = self.store.update(preset["id"], {"prompt": "after"}, {"prompt": "before"})
 
         self.assertEqual(preset["created_at"], created_at)
         self.assertEqual(preset["updated_at"], created_at)
@@ -109,9 +111,8 @@ class PresetStoreTests(unittest.TestCase):
 
         moved = reloaded.update(
             preset["id"],
-            "Quality",
-            "masterpiece",
-            PresetStore.DEFAULT_PROFILE_ID,
+            {"profile_id": PresetStore.DEFAULT_PROFILE_ID},
+            {"profile_id": profile["id"]},
         )
         self.assertEqual(moved["profile_id"], PresetStore.DEFAULT_PROFILE_ID)
 
@@ -279,9 +280,102 @@ class PresetStoreTests(unittest.TestCase):
     def test_content_update_keeps_the_existing_profile_when_not_specified(self):
         profile = self.store.create_profile("Photo")
         preset = self.store.create("Portrait", "before", profile["id"])
-        updated = self.store.update(preset["id"], "Portrait", "after")
+        updated = self.store.update(preset["id"], {"prompt": "after"}, {"prompt": "before"})
         self.assertEqual(updated["profile_id"], profile["id"])
         self.assertEqual(PresetStore(self.path).list(), [updated])
+
+    def test_edits_to_different_fields_preserve_both_changes_and_latest_profile(self):
+        profile = self.store.create_profile("Photo")
+        original = self.store.create("Before", "old")
+        self.store.update(original["id"], {"prompt": "new", "profile_id": profile["id"]},
+                          {"prompt": "old", "profile_id": "default"})
+        updated = self.store.update(original["id"], {"name": "Renamed"}, {"name": "Before"})
+        self.assertEqual((updated["name"], updated["prompt"], updated["profile_id"]),
+                         ("Renamed", "new", profile["id"]))
+        self.assertEqual(PresetStore(self.path).list(), [updated])
+
+    def test_same_field_conflict_rejects_every_change_and_can_be_reviewed_again(self):
+        original = self.store.create("Before", "old")
+        latest = self.store.update(original["id"], {"prompt": "from A"}, {"prompt": "old"})
+        before = self.store.snapshot()
+        disk_before = self.path.read_bytes()
+        with self.assertRaises(PresetEditConflictError) as raised:
+            self.store.update(original["id"], {"name": "from B", "prompt": "from B"},
+                              {"name": "Before", "prompt": "old"})
+        self.assertEqual(raised.exception.fields, ["prompt"])
+        self.assertEqual(raised.exception.current, latest)
+        raised.exception.current["name"] = "cannot mutate store"
+        self.assertEqual(self.store.snapshot(), before)
+        self.assertEqual(self.path.read_bytes(), disk_before)
+        self.store.update(original["id"], {"prompt": "from C"}, {"prompt": "from A"})
+        with self.assertRaises(PresetEditConflictError):
+            self.store.update(original["id"], {"prompt": "from B"}, {"prompt": "from A"})
+        result = self.store.update(original["id"], {"name": "from B", "prompt": "from B"},
+                                   {"name": "Before", "prompt": "from C"})
+        self.assertEqual((result["name"], result["prompt"]), ("from B", "from B"))
+
+    def test_no_op_and_identical_concurrent_edits_do_not_write_or_change_timestamps(self):
+        original = self.store.create("Name", "old")
+        latest = self.store.update(original["id"], {"prompt": "same new text"}, {"prompt": "old"})
+        before = self.store.snapshot()
+        with patch.object(self.store, "_write", side_effect=AssertionError("unexpected write")):
+            self.assertEqual(self.store.update(original["id"], {}, {}), latest)
+            self.assertEqual(self.store.update(original["id"], {"prompt": "same new text"},
+                                               {"prompt": "old"}), latest)
+        self.assertEqual(self.store.snapshot(), before)
+
+    def test_manual_json_edits_conflict_even_without_a_timestamp_change(self):
+        original = self.store.create("Name", "old")
+        document = json.loads(self.path.read_text(encoding="utf-8"))
+        document["presets"][0]["prompt"] = "edited by hand"
+        self.path.write_text(json.dumps(document), encoding="utf-8")
+        disk_before = self.path.read_bytes()
+        with self.assertRaises(PresetEditConflictError) as raised:
+            self.store.update(original["id"], {"prompt": "from browser"}, {"prompt": "old"})
+        self.assertEqual(raised.exception.current["updated_at"], original["updated_at"])
+        self.assertEqual(raised.exception.current["prompt"], "edited by hand")
+        self.assertEqual(self.path.read_bytes(), disk_before)
+
+    def test_invalid_field_edits_do_not_modify_the_preset(self):
+        original = self.store.create("Name", "old")
+        for changes, expected in (
+            (None, {}), ({"id": "other"}, {"id": original["id"]}),
+            ({"prompt": "new"}, None), ({"prompt": "new"}, {}),
+            ({"prompt": "new"}, {"prompt": 42}), ({}, {"name": "Name"}),
+            ({"name": " "}, {"name": "Name"}), ({"prompt": 42}, {"prompt": "old"}),
+            ({"profile_id": None}, {"profile_id": "default"}),
+            ({"prompt": "\ud800"}, {"prompt": "old"}),
+        ):
+            with self.subTest(changes=changes, expected=expected):
+                before = self.store.snapshot()
+                with self.assertRaises(PresetValidationError):
+                    self.store.update(original["id"], changes, expected)
+                self.assertEqual(self.store.snapshot(), before)
+        with self.assertRaises(ProfileNotFoundError):
+            self.store.update(original["id"], {"profile_id": "missing"}, {"profile_id": "default"})
+        self.store.delete(original["id"])
+        with self.assertRaises(PresetNotFoundError):
+            self.store.update(original["id"], {"prompt": "new"}, {"prompt": "old"})
+        self.assertEqual(self.store.list(), [])
+
+    def test_concurrent_same_field_edits_allow_only_one_writer(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        original = self.store.create("Name", "old")
+        barrier = Barrier(2)
+
+        def edit(prompt):
+            barrier.wait()
+            try:
+                return self.store.update(original["id"], {"prompt": prompt}, {"prompt": "old"})
+            except PresetEditConflictError:
+                return None
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(edit, ["from A", "from B"]))
+        self.assertEqual(sum(result is not None for result in results), 1)
+        self.assertEqual(PresetStore(self.path).list(), [next(result for result in results if result)])
 
     def test_failed_writes_leave_memory_and_disk_unchanged(self):
         profile = self.store.create_profile("Photo")
@@ -289,7 +383,8 @@ class PresetStoreTests(unittest.TestCase):
         second = self.store.create("Second", "two")
         operations = {
             "create": lambda: self.store.create("Failed", "unsaved"),
-            "update": lambda: self.store.update(first["id"], "Changed", "unsaved"),
+            "update": lambda: self.store.update(first["id"], {"name": "Changed", "prompt": "unsaved"},
+                                               {"name": first["name"], "prompt": first["prompt"]}),
             "delete": lambda: self.store.delete(first["id"]),
             "reorder": lambda: self.store.reorder([second["id"], first["id"]]),
             "create_profile": lambda: self.store.create_profile("Unsaved"),

@@ -63,7 +63,8 @@ class PresetTransferTests(unittest.TestCase):
         workflow = {"ids": ["a"], "separator": "comma", "bundle": document(preset("a", "embedded"))}
         token = self.store.change_token(workflow)
         self.assertEqual(self.store.join_selected(workflow), "embedded")
-        self.store.update("a", "Renamed", "new shared")
+        self.store.update("a", {"name": "Renamed", "prompt": "new shared"},
+                          {"name": "Example", "prompt": "shared"})
         self.assertEqual(self.store.change_token(workflow), token)
         self.assertEqual(self.store.join_selected(workflow), "embedded")
         self.assertEqual(self.store.list()[0]["prompt"], "new shared")
@@ -71,7 +72,8 @@ class PresetTransferTests(unittest.TestCase):
         self.assertNotEqual(self.store.change_token(workflow), token)
         workflow["ids"].append("b")
         self.assertEqual(self.store.join_selected(workflow), "edited embedded, second")
-        self.store.update("b", "Second", "updated second")
+        self.store.update("b", {"name": "Second", "prompt": "updated second"},
+                          {"name": "Example", "prompt": "second"})
         self.assertEqual(self.store.join_selected(workflow), "edited embedded, updated second")
 
     def test_invalid_or_incomplete_workflow_bundle_never_outputs_partial_text(self):
@@ -136,7 +138,7 @@ class PresetTransferTests(unittest.TestCase):
         self.store.import_document(document(preset("a", "old")))
         incoming = document(preset("a", "incoming"))
         preview = self.store.preview_import(incoming)
-        self.store.update("a", "Example", "changed while reviewing")
+        self.store.update("a", {"prompt": "changed while reviewing"}, {"prompt": "old"})
         before = self.path.read_bytes()
         with self.assertRaises(PresetImportConflictError) as error:
             self.store.import_document(incoming, {"a": "overwrite"}, expected(preview))

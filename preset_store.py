@@ -26,6 +26,16 @@ class PresetImportConflictError(PresetValidationError):
         self.preview = preview
 
 
+class PresetEditConflictError(PresetValidationError):
+    """Fields being edited have changed since the editor was opened."""
+
+    def __init__(self, current: dict, fields: list[str], snapshot: dict):
+        super().__init__("This preset changed elsewhere. Review the conflicting fields before saving.")
+        self.current = deepcopy(current)
+        self.fields = fields
+        self.snapshot = snapshot
+
+
 class PresetNotFoundError(KeyError):
     """Raised when a requested preset does not exist."""
 
@@ -334,13 +344,17 @@ class PresetStore:
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             self._reload_if_changed()
-            return {
-                "version": self.VERSION,
-                "profiles": deepcopy(self._profiles),
-                "presets": deepcopy(self._presets),
-                "store_id": self._store_id,
-                "revision": self._revision,
-            }
+            return self._snapshot()
+
+    def _snapshot(self) -> dict[str, object]:
+        """Capture the current in-memory state while the caller holds the lock."""
+        return {
+            "version": self.VERSION,
+            "profiles": deepcopy(self._profiles),
+            "presets": deepcopy(self._presets),
+            "store_id": self._store_id,
+            "revision": self._revision,
+        }
 
     def export_document(self, profile_id: str | None = None) -> dict:
         with self._lock:
@@ -492,24 +506,38 @@ class PresetStore:
             return deepcopy(preset)
 
     def update(
-        self, preset_id: str, name: object, prompt: object, profile_id: object = None
+        self, preset_id: str, changes: object, expected: object
     ) -> dict[str, str]:
+        """Apply only edited fields, comparing their original values under the lock."""
         with self._transaction():
-            validated_name = self._validate_name(name)
-            validated_prompt = self._validate_prompt(prompt)
-            for preset in self._presets:
-                if preset["id"] == preset_id:
-                    validated_profile_id = (
-                        preset["profile_id"] if profile_id is None
-                        else self._validated_profile_id(profile_id)
-                    )
-                    preset["name"] = validated_name
-                    preset["prompt"] = validated_prompt
-                    preset["profile_id"] = validated_profile_id
-                    preset["updated_at"] = self._timestamp()
-                    self._write()
-                    return deepcopy(preset)
-            raise PresetNotFoundError(preset_id)
+            preset = next((p for p in self._presets if p["id"] == preset_id), None)
+            if preset is None:
+                raise PresetNotFoundError(preset_id)
+            if not isinstance(changes, dict) or not set(changes) <= {"name", "prompt", "profile_id"}:
+                raise PresetValidationError("changes must contain only name, prompt, or profile_id.")
+            if not isinstance(expected, dict) or set(expected) != set(changes):
+                raise PresetValidationError("expected must contain the original value of each changed field.")
+            if "profile_id" in changes and not isinstance(changes["profile_id"], str):
+                raise PresetValidationError("profile_id must be a string.")
+            validators = {
+                "name": self._validate_name,
+                "prompt": self._validate_prompt,
+                "profile_id": self._validated_profile_id,
+            }
+            validated = {field: validators[field](value) for field, value in changes.items()}
+            if any(not isinstance(value, str) for value in expected.values()):
+                raise PresetValidationError("Original field values must be strings.")
+            conflicts = [
+                field for field, value in validated.items()
+                if preset[field] != expected[field] and preset[field] != value
+            ]
+            if conflicts:
+                raise PresetEditConflictError(preset, conflicts, self._snapshot())
+            if any(preset[field] != value for field, value in validated.items()):
+                preset.update(validated)
+                preset["updated_at"] = self._timestamp()
+                self._write()
+            return deepcopy(preset)
 
     def create_profile(self, name: object) -> dict[str, str]:
         with self._transaction():

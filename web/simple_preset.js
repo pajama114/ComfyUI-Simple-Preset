@@ -227,6 +227,12 @@ function installStyles() {
             overflow-y: auto; padding: 7px 8px;
         }
         .sp-form-actions { flex: none; gap: 6px; }
+        .sp-edit-review {
+            min-height: 0; max-height: 50%; display: flex; flex-direction: column; gap: 5px;
+            padding-top: 7px; border-top: 1px solid var(--sp-border);
+        }
+        .sp-form.sp-edit-review-open .sp-textarea { min-height: 45px; }
+        .sp-edit-conflict-actions { display: flex; flex-wrap: wrap; gap: 5px; }
         .sp-empty {
             margin: auto; padding: 20px; max-width: 270px; text-align: center;
             color: var(--sp-muted); border: 1px dashed var(--sp-border); border-radius: 8px;
@@ -882,6 +888,9 @@ function createPresetWidget(node, inputName, inputData) {
     let currentProfileId = storedProfileId(node);
     let presetFormProfileId = DEFAULT_PROFILE_ID;
     let editingId = null;
+    let editingBase = null;
+    let formGeneration = 0;
+    const pendingEditConflicts = new Set();
     let editingProfileId = null;
     let formVisible = false;
     let profileFormVisible = false;
@@ -1022,7 +1031,12 @@ function createPresetWidget(node, inputName, inputData) {
     const saveButton = iconButton("save", "Save preset", "sp-icon-button sp-primary");
     formActions.append(cancelButton, saveButton);
     formHeader.append(formTitle, formActions);
-    form.append(formHeader, nameInput, presetProfileField, promptInput);
+    const editReview = element("div", "sp-edit-review sp-hidden");
+    const editNotice = element("div", "", "Changed elsewhere. Choose a value for each field, then save again.");
+    editNotice.setAttribute("role", "alert");
+    const editConflicts = element("div", "sp-import-conflicts");
+    editReview.append(editNotice, editConflicts);
+    form.append(formHeader, nameInput, presetProfileField, promptInput, editReview);
 
     const list = element("div", "sp-list");
     list.tabIndex = 0;
@@ -1206,6 +1220,9 @@ function createPresetWidget(node, inputName, inputData) {
         profileFormVisible = false;
         profileNameInput.value = "";
         editingId = preset?.id ?? null;
+        editingBase = preset ? { name: preset.name, prompt: preset.prompt, profile_id: preset.profile_id } : null;
+        formGeneration += 1;
+        clearEditConflicts();
         formVisible = true;
         formTitle.textContent = preset ? (isBundled(preset.id) ? "Edit workflow preset" : "Edit preset") : "Add preset";
         nameInput.value = preset?.name ?? "";
@@ -1223,6 +1240,9 @@ function createPresetWidget(node, inputName, inputData) {
 
     function closeForm() {
         editingId = null;
+        editingBase = null;
+        formGeneration += 1;
+        clearEditConflicts();
         formVisible = false;
         nameInput.value = "";
         promptInput.value = "";
@@ -1234,6 +1254,9 @@ function createPresetWidget(node, inputName, inputData) {
     function openProfileForm(profile = null) {
         closeImport();
         editingId = null;
+        editingBase = null;
+        formGeneration += 1;
+        clearEditConflicts();
         formVisible = false;
         nameInput.value = "";
         promptInput.value = "";
@@ -1253,7 +1276,61 @@ function createPresetWidget(node, inputName, inputData) {
         render();
     }
 
-    async function mutate(path, options) {
+    function clearEditConflicts() {
+        pendingEditConflicts.clear();
+        editConflicts.replaceChildren();
+        editReview.classList.add("sp-hidden");
+        form.classList.remove("sp-edit-review-open");
+    }
+
+    function showEditConflicts({ current, fields }) {
+        clearEditConflicts();
+        const labels = { name: "Name", prompt: "Prompt", profile_id: "Profile" };
+        const draft = { name: nameInput.value.trim(), prompt: promptInput.value, profile_id: presetFormProfileId };
+        for (const field of fields) {
+            if (!(field in labels)) continue;
+            pendingEditConflicts.add(field);
+            const row = element("div", "sp-import-conflict sp-edit-conflict");
+            row.dataset.field = field;
+            const details = element("details", "");
+            details.append(element("summary", "", `Compare ${labels[field].toLowerCase()}`));
+            for (const [label, value] of [["Latest", current[field]], ["Your changes", draft[field]]]) {
+                const text = field === "profile_id"
+                    ? sharedProfiles.find((p) => p.id === value)?.name ?? value : value;
+                details.append(element("strong", "", label), element("pre", "", text || "(Empty)"));
+            }
+            const actions = element("div", "sp-edit-conflict-actions");
+            for (const [useLatest, label] of [[true, "Use latest"], [false, "Keep my changes"]]) {
+                const button = element("button", "sp-transfer-action", label);
+                button.type = "button";
+                button.setAttribute("aria-label", `${label}: ${labels[field]}`);
+                button.addEventListener("click", () => {
+                    if (loading || !active || !editingBase) return;
+                    // A choice acknowledges only this field's reviewed value.
+                    // A later save checks it again if another edit arrives.
+                    editingBase[field] = current[field];
+                    if (useLatest) {
+                        if (field === "name") nameInput.value = current[field];
+                        if (field === "prompt") promptInput.value = current[field];
+                        if (field === "profile_id") presetFormProfileId = current[field];
+                    }
+                    pendingEditConflicts.delete(field);
+                    row.remove();
+                    if (!pendingEditConflicts.size) clearEditConflicts();
+                    rebuildPresetProfileOptions();
+                    render();
+                });
+                actions.append(button);
+            }
+            row.append(element("strong", "", labels[field]), details, actions);
+            editConflicts.append(row);
+        }
+        editReview.classList.remove("sp-hidden");
+        form.classList.add("sp-edit-review-open");
+        render();
+    }
+
+    async function mutate(path, options, onError = null) {
         if (loading || !active) return null;
         const requestActivation = activation;
         syncToken += 1;
@@ -1263,7 +1340,9 @@ function createPresetWidget(node, inputName, inputData) {
             notifyLocal(payload);
             return active && activation === requestActivation ? payload : null;
         } catch (error) {
-            if (active && activation === requestActivation) showError(error.message || String(error));
+            if (active && activation === requestActivation && !onError?.(error)) {
+                showError(error.message || String(error));
+            }
             return null;
         } finally {
             if (activation === requestActivation) setLoading(false);
@@ -1271,7 +1350,7 @@ function createPresetWidget(node, inputName, inputData) {
     }
 
     async function saveForm() {
-        if (loading || !active) return;
+        if (loading || !active || !formVisible || pendingEditConflicts.size) return;
         const name = nameInput.value.trim();
         const prompt = promptInput.value;
         if (!editingId && currentProfileId === ALL_PROFILES) {
@@ -1298,17 +1377,34 @@ function createPresetWidget(node, inputName, inputData) {
         const path = editingId
             ? `/simple-preset/presets/${encodeURIComponent(editingId)}`
             : "/simple-preset/presets";
+        const requestGeneration = formGeneration;
+        const draft = { name, prompt, profile_id: editingId ? presetFormProfileId : currentProfileId };
+        let body = draft;
+        if (editingId) {
+            const changes = {};
+            const expected = {};
+            for (const [field, value] of Object.entries(draft)) {
+                if (value === editingBase[field]) continue;
+                changes[field] = value;
+                expected[field] = editingBase[field];
+            }
+            if (!Object.keys(changes).length) {
+                closeForm();
+                return;
+            }
+            body = { changes, expected };
+        }
         const ok = await mutate(path, {
             method: editingId ? "PUT" : "POST",
-            body: JSON.stringify({
-                name,
-                prompt,
-                profile_id: editingId
-                    ? presetFormProfileId
-                    : currentProfileId,
-            }),
+            body: JSON.stringify(body),
+        }, (error) => {
+            if (formGeneration !== requestGeneration) return true;
+            if (error.status !== 409 || !error.payload?.current || !Array.isArray(error.payload.fields)) return false;
+            controller.applyPayload(error.payload.snapshot);
+            showEditConflicts(error.payload);
+            return true;
         });
-        if (ok) closeForm();
+        if (ok && formGeneration === requestGeneration) closeForm();
     }
 
     async function saveProfile() {
@@ -1435,7 +1531,9 @@ function createPresetWidget(node, inputName, inputData) {
             : "Select a profile before adding a preset";
         addButton.title = addPresetTitle;
         addButton.setAttribute("aria-label", addPresetTitle);
-        saveButton.disabled = loading || (!editingId && currentProfileId === ALL_PROFILES);
+        saveButton.disabled = loading || pendingEditConflicts.size > 0 || (!editingId && currentProfileId === ALL_PROFILES);
+        nameInput.disabled = promptInput.disabled = loading;
+        for (const button of editConflicts.querySelectorAll("button")) button.disabled = loading;
         presetProfileButton.disabled = loading || profiles.length === 0;
         profileButton.disabled = loading;
         addProfileButton.disabled = loading;
